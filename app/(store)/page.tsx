@@ -287,7 +287,7 @@ export default function Home() {
           </AnimatedSection>
 
           {loading ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-6">
               {Array(4).fill(0).map((_, i) => (
                 <div key={i} className="animate-pulse">
                   <div className="bg-gray-100 aspect-[3/4] rounded-2xl mb-4" />
@@ -297,7 +297,7 @@ export default function Home() {
               ))}
             </div>
           ) : featuredProducts.length > 0 ? (
-            <AnimatedGrid className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 lg:gap-8">
+            <AnimatedGrid className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-6 lg:gap-8">
               {[...featuredProducts].reverse().map(buildCard)}
             </AnimatedGrid>
           ) : (

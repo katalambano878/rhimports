@@ -147,25 +147,25 @@ export default function ProductCard({
 
         {/* Badges — top-left, vertical stack so they never overlap */}
         <div
-          className={`absolute flex flex-col items-start pointer-events-none ${compact ? 'top-1.5 left-1.5 gap-1' : 'top-2 left-2 gap-1 sm:top-3 sm:left-3 sm:gap-1.5'}`}
+          className={`absolute flex flex-col items-start pointer-events-none ${compact ? 'top-1.5 left-1.5 gap-0.5 sm:gap-1' : 'top-1.5 left-1.5 gap-0.5 sm:top-3 sm:left-3 sm:gap-1.5'}`}
         >
           <span
-            className={`inline-flex items-center gap-1 font-bold uppercase tracking-[0.12em] rounded-full shadow-sm text-white ${isPreorder ? 'bg-amber-500' : 'bg-emerald-500'} ${compact ? 'text-[8px] sm:text-[10px] px-1.5 py-0.5 sm:px-2.5 sm:py-1' : 'text-[8px] px-1.5 py-0.5 sm:text-[10px] sm:px-2.5 sm:py-1'}`}
+            className={`inline-flex items-center gap-1 font-bold uppercase tracking-[0.12em] rounded-full shadow-sm text-white ${isPreorder ? 'bg-amber-500' : 'bg-emerald-500'} text-[7px] px-1 py-[2px] sm:text-[10px] sm:px-2.5 sm:py-1`}
           >
-            <i className={`${isPreorder ? 'ri-time-line' : 'ri-checkbox-circle-line'} ${compact ? 'text-[9px] sm:text-[11px]' : 'text-[9px] sm:text-xs'}`} />
+            <i className={`${isPreorder ? 'ri-time-line' : 'ri-checkbox-circle-line'} text-[8px] sm:text-[11px]`} />
             {isPreorder ? 'Preorder' : 'Available'}
           </span>
           {badge && (
             <span
-              className={`inline-flex items-center gap-0.5 bg-black/85 backdrop-blur-md text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm ${compact ? 'text-[8px] sm:text-[10px] px-1.5 py-0.5 sm:px-2.5 sm:py-1' : 'text-[8px] px-1.5 py-0.5 sm:text-[10px] sm:px-2.5 sm:py-1'}`}
+              className="inline-flex items-center gap-0.5 bg-black/85 backdrop-blur-md text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm text-[7px] px-1 py-[2px] sm:text-[10px] sm:px-2.5 sm:py-1"
             >
-              <span className={`rounded-full bg-amber-400 ${compact ? 'w-0.5 h-0.5 sm:w-1 sm:h-1' : 'w-0.5 h-0.5 sm:w-1 sm:h-1'}`} />
+              <span className="rounded-full bg-amber-400 w-0.5 h-0.5 sm:w-1 sm:h-1" />
               {badge}
             </span>
           )}
           {hasDiscount && (
             <span
-              className={`inline-flex items-center bg-red-500 text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm ${compact ? 'text-[8px] sm:text-[10px] px-1.5 py-0.5 sm:px-2.5 sm:py-1' : 'text-[8px] px-1.5 py-0.5 sm:text-[10px] sm:px-2.5 sm:py-1'}`}
+              className="inline-flex items-center bg-red-500 text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm text-[7px] px-1 py-[2px] sm:text-[10px] sm:px-2.5 sm:py-1"
             >
               −{discountPct}%
             </span>
