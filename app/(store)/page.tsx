@@ -146,6 +146,7 @@ export default function Home() {
         reviewCount={product.review_count || 0}
         badge={product.featured ? 'Featured' : undefined}
         inStock={effectiveStock > 0}
+        isPreorder={product.metadata?.is_preorder ?? !!product.metadata?.preorder_shipping}
         maxStock={effectiveStock || 50}
         moq={product.moq || 1}
         hasVariants={hasVariants}

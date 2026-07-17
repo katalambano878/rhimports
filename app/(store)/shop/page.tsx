@@ -185,6 +185,7 @@ function ShopContent() {
               reviewCount: 0, // Need to implement reviews relation
               badge: p.compare_at_price > p.price ? 'Sale' : undefined, // Simple badge logic
               inStock: effectiveStock > 0,
+              isPreorder: p.metadata?.is_preorder ?? !!p.metadata?.preorder_shipping,
               maxStock: effectiveStock || 50,
               moq: p.moq || 1,
               category: p.categories?.name,

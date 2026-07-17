@@ -50,6 +50,7 @@ interface ProductCardProps {
   reviewCount?: number;
   badge?: string;
   inStock?: boolean;
+  isPreorder?: boolean;
   maxStock?: number;
   moq?: number;
   hasVariants?: boolean;
@@ -71,6 +72,7 @@ export default function ProductCard({
   reviewCount = 0,
   badge,
   inStock = true,
+  isPreorder = false,
   maxStock = 50,
   moq = 1,
   hasVariants = false,
@@ -143,21 +145,28 @@ export default function ProductCard({
           className={`w-full h-full object-contain transition-transform duration-700 ease-out group-hover:scale-110 ${compact ? 'p-1.5 sm:p-3' : 'p-3 sm:p-4'}`}
         />
 
-        {/* Badges — top-left, vertical stack so they never overlap */}
+        {/* Badges — top-left, vertical stack so they never overlap.
+            Kept extra small on mobile so they don't cover the photo. */}
         <div
-          className={`absolute flex flex-col items-start pointer-events-none ${compact ? 'top-1.5 left-1.5 gap-1' : 'top-3 left-3 gap-1.5'}`}
+          className={`absolute flex flex-col items-start pointer-events-none ${compact ? 'top-1.5 left-1.5 gap-0.5 sm:gap-1' : 'top-1.5 left-1.5 gap-0.5 sm:top-3 sm:left-3 sm:gap-1.5'}`}
         >
+          <span
+            className={`inline-flex items-center gap-0.5 sm:gap-1 font-bold uppercase tracking-[0.12em] rounded-full shadow-sm text-white ${isPreorder ? 'bg-amber-500' : 'bg-emerald-500'} text-[7px] px-1.5 py-[3px] sm:text-[10px] sm:px-2.5 sm:py-1`}
+          >
+            <i className={`${isPreorder ? 'ri-time-line' : 'ri-checkbox-circle-line'} text-[8px] sm:text-[11px]`} />
+            {isPreorder ? 'Preorder' : 'Available'}
+          </span>
           {badge && (
             <span
-              className={`inline-flex items-center gap-0.5 bg-black/85 backdrop-blur-md text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm ${compact ? 'text-[8px] sm:text-[10px] px-1.5 py-0.5 sm:px-2.5 sm:py-1' : 'text-[10px] px-2.5 py-1'}`}
+              className="inline-flex items-center gap-0.5 bg-black/85 backdrop-blur-md text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm text-[7px] px-1.5 py-[3px] sm:text-[10px] sm:px-2.5 sm:py-1"
             >
-              <span className={`rounded-full bg-amber-400 ${compact ? 'w-0.5 h-0.5 sm:w-1 sm:h-1' : 'w-1 h-1'}`} />
+              <span className="rounded-full bg-amber-400 w-0.5 h-0.5 sm:w-1 sm:h-1" />
               {badge}
             </span>
           )}
           {hasDiscount && (
             <span
-              className={`inline-flex items-center bg-red-500 text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm ${compact ? 'text-[8px] sm:text-[10px] px-1.5 py-0.5 sm:px-2.5 sm:py-1' : 'text-[10px] px-2.5 py-1'}`}
+              className="inline-flex items-center bg-red-500 text-white font-bold uppercase tracking-[0.12em] rounded-full shadow-sm text-[7px] px-1.5 py-[3px] sm:text-[10px] sm:px-2.5 sm:py-1"
             >
               −{discountPct}%
             </span>

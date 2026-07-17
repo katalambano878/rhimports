@@ -165,6 +165,7 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                 rating: p.rating_avg || 0,
                 reviewCount: 0,
                 inStock: effectiveStock > 0,
+                isPreorder: p.metadata?.is_preorder ?? !!p.metadata?.preorder_shipping,
                 maxStock: effectiveStock || 50,
                 moq: p.moq || 1,
                 hasVariants,
