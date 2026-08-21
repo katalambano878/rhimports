@@ -485,7 +485,7 @@ export default function Home() {
           10 · WHATSAPP CTA
       ══════════════════════════════════════════════════════════ */}
       <section className="py-20 px-4 sm:px-6 bg-white relative">
-        <AnimatedSection className="max-w-4xl mx-auto">
+        <AnimatedSection className="max-w-5xl mx-auto">
           <div className="relative rounded-3xl bg-gradient-to-br from-[#1B2A6B] via-[#0F1A47] to-black overflow-hidden shadow-2xl shadow-[#1B2A6B]/20 p-8 sm:p-10 lg:p-12 flex flex-col md:flex-row items-center justify-between gap-10 border border-gray-100/10">
             {/* Abstract Background Elements */}
             <div className="absolute top-0 right-0 w-[30rem] h-[30rem] -translate-y-1/2 translate-x-1/3 rounded-full bg-primary/20 blur-[80px] pointer-events-none" />
@@ -494,13 +494,16 @@ export default function Home() {
             <div className="relative z-10 text-left md:max-w-md">
               <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 backdrop-blur-md mb-5">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#25D366] animate-pulse" />
-                <span className="text-white/80 text-[10px] font-bold tracking-widest uppercase">We're Online</span>
+                <span className="text-white/80 text-[10px] font-bold tracking-widest uppercase">New WhatsApp number</span>
               </div>
               <h2 className="font-serif text-3xl md:text-4xl lg:text-5xl text-white mb-4 leading-tight">
                 Still have <span className="italic text-white/70">questions?</span>
               </h2>
-              <p className="text-white/60 text-sm font-light leading-relaxed mb-8">
-                Not sure what model to get? Need a specific spec? Chat with our team directly. Real people, honest advice, and fast replies.
+              <p className="text-white/60 text-sm font-light leading-relaxed mb-3">
+                Chat with us on our <span className="text-white font-semibold">new WhatsApp number</span>. Real people, honest advice, and fast replies.
+              </p>
+              <p className="text-white text-2xl sm:text-3xl font-bold tracking-wide mb-8">
+                {contactPhone}
               </p>
               <div className="flex flex-col sm:flex-row gap-3">
                 <a href={waHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-2 bg-[#25D366] hover:bg-[#1ebe5d] text-white px-6 py-3 rounded-full font-bold text-sm transition-all hover:scale-105 shadow-xl shadow-[#25D366]/20 group">
@@ -516,6 +519,22 @@ export default function Home() {
                 Mon–Fri 9am–6pm · Sat 10am–4pm
               </p>
             </div>
+
+            <a
+              href={waHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="relative z-10 w-full max-w-[280px] shrink-0 rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/15 hover:scale-[1.02] transition-transform"
+              aria-label={`Chat on WhatsApp at ${contactPhone}`}
+            >
+              <Image
+                src="/whatsapp-number-announcement.png"
+                alt={`R&H Imports new WhatsApp number ${contactPhone}`}
+                width={560}
+                height={700}
+                className="w-full h-auto"
+              />
+            </a>
 
 
           </div>

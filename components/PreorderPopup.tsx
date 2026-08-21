@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
+import { DEFAULT_CONTACT_PHONE, whatsAppHref } from '@/lib/contact';
 
 const STORAGE_KEY = 'rnh-preorder-notice-seen';
 const COOLDOWN_HOURS = 24;
@@ -105,7 +106,7 @@ export default function PreorderPopup() {
           </button>
 
           <Link
-            href="https://wa.me/233502300319"
+            href={whatsAppHref(DEFAULT_CONTACT_PHONE, 'Hello RNH Imports, I have a question.')}
             target="_blank"
             rel="noopener noreferrer"
             onClick={dismiss}

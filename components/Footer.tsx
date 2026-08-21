@@ -137,9 +137,9 @@ export default function Footer() {
                       href={`https://wa.me/233${contactPhone.replace(/\s/g, '').replace(/^0/, '')}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-1 text-white/60 hover:text-white transition-colors text-xs"
+                      className="flex items-center gap-1 text-[#25D366] hover:text-white transition-colors text-xs"
                     >
-                      <i className="ri-whatsapp-line"></i> WhatsApp
+                      <i className="ri-whatsapp-line"></i> WhatsApp · {contactPhone}
                     </a>
                   </div>
                 </li>

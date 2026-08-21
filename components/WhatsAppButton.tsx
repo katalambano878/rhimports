@@ -12,10 +12,11 @@ import { DEFAULT_CONTACT_PHONE } from '@/lib/contact';
 export default function WhatsAppButton() {
   const { getSetting } = useCMS();
 
-  const contactPhone = getSetting('contact_phone') || DEFAULT_CONTACT_PHONE;
+  const contactPhone =
+    getSetting('social_whatsapp') || getSetting('contact_phone') || DEFAULT_CONTACT_PHONE;
   if (!contactPhone) return null;
 
-  // Normalize a local GH number (e.g. 0502300319) to wa.me format (233502300319).
+  // Normalize a local GH number (e.g. 0594 162 758) to wa.me format (233594162758).
   const digits = contactPhone.replace(/\D/g, '');
   const waNumber = digits.startsWith('233')
     ? digits

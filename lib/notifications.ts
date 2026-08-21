@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { DEFAULT_CONTACT_PHONE } from '@/lib/contact';
 
 // Server-side client that bypasses RLS for reads we make while building
 // notifications (e.g. order items). Falls back to the anon client if the
@@ -25,7 +26,7 @@ const BRAND = {
     colorLight: '#EEF0FB',
     colorDark: '#0F1A47',
     url: (process.env.NEXT_PUBLIC_APP_URL || 'https://rnhimports.com').replace(/\/+$/, ''),
-    phone: process.env.STORE_PHONE || '0502300319',
+    phone: process.env.STORE_PHONE || DEFAULT_CONTACT_PHONE,
 };
 
 // Reusable branded email layout

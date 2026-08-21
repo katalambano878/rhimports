@@ -21,6 +21,7 @@ const UpdatePrompt = dynamic(() => import('@/components/UpdatePrompt'), { ssr: f
 const LiveSalesNotification = dynamic(() => import('@/components/LiveSalesNotification'), { ssr: false });
 const PreorderPopup = dynamic(() => import('@/components/PreorderPopup'), { ssr: false });
 const WhatsAppButton = dynamic(() => import('@/components/WhatsAppButton'), { ssr: false });
+const WhatsAppAnnouncementBanner = dynamic(() => import('@/components/WhatsAppAnnouncementBanner'), { ssr: false });
 
 export default function StoreLayout({
   children,
@@ -35,6 +36,7 @@ export default function StoreLayout({
       <ScrollToTop />
       <div className="min-h-screen bg-surface-subtle">
         <PWAInstaller />
+        <WhatsAppAnnouncementBanner />
         <Header />
         <ErrorBoundary>
           {children}

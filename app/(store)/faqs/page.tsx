@@ -62,7 +62,7 @@ export default function FAQsPage() {
     {
       category: 'shipping',
       question: 'Can I pick up my order in person?',
-      answer: 'Yes — walk-ins are welcome. We are located at Amasaman Achiaman, Annosel Junction, Accra. Open Mon – Fri: 9am – 6pm and Saturday: 10am – 4pm. Call or WhatsApp 0502300319 before coming to confirm stock availability.'
+      answer: 'Yes — walk-ins are welcome. We are located at Amasaman Achiaman, Annosel Junction, Accra. Open Mon – Fri: 9am – 6pm and Saturday: 10am – 4pm. Call or WhatsApp 0594 162 758 before coming to confirm stock availability.'
     },
     {
       category: 'shipping',

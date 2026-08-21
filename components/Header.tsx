@@ -172,10 +172,10 @@ export default function Header() {
               href={waHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 px-3 py-0.5 rounded-full transition-colors text-white font-semibold"
+              className="flex items-center gap-1.5 bg-[#25D366] hover:bg-[#1ebe5d] px-3 py-0.5 rounded-full transition-colors text-white font-semibold"
             >
-              <i className="ri-whatsapp-line text-[#25D366]" />
-              WhatsApp
+              <i className="ri-whatsapp-line" />
+              New: {contactPhone}
             </a>
           </div>
         </div>
@@ -607,7 +607,7 @@ export default function Header() {
                 className="flex items-center justify-center gap-2 w-full py-3 text-sm font-bold text-white bg-[#25D366] rounded-2xl hover:bg-[#1ebe5d] transition-colors shadow-sm"
               >
                 <i className="ri-whatsapp-line text-base" />
-                Chat on WhatsApp
+                Chat on WhatsApp · {contactPhone}
               </a>
               <p className="text-[10px] text-gray-400 text-center pt-1">
                 {contactPhone} · {contactEmail}

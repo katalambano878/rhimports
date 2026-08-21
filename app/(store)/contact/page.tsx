@@ -159,6 +159,28 @@ export default function ContactPage() {
         <div className="grid lg:grid-cols-3 gap-8">
           {/* Contact Info Cards */}
           <AnimatedSection direction="left" delay={0.1} className="lg:col-span-1 space-y-6">
+            <a
+              href={`https://wa.me/233${(contactPhone || '').replace(/\s/g, '').replace(/^0/, '')}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 border border-gray-100 overflow-hidden group"
+            >
+              <img
+                src="/whatsapp-number-announcement.png"
+                alt={`R&H Imports new WhatsApp number ${contactPhone}`}
+                className="w-full h-auto"
+              />
+              <div className="p-5 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold tracking-[0.18em] uppercase text-[#25D366]">Our new WhatsApp</p>
+                  <p className="text-xl font-bold text-[#1B2A6B]">{contactPhone}</p>
+                </div>
+                <span className="inline-flex items-center gap-1.5 bg-[#25D366] text-white text-xs font-bold px-3.5 py-2 rounded-full group-hover:bg-[#1ebe5d] transition-colors shrink-0">
+                  <i className="ri-whatsapp-fill" /> Chat now
+                </span>
+              </div>
+            </a>
+
             {contactMethods.map((method, index) => (
               <a
                 key={index}

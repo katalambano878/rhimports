@@ -147,14 +147,14 @@ const organizationSchema = {
   "contactPoint": [
     {
       "@type": "ContactPoint",
-      "telephone": "+233-555-600-371",
+      "telephone": "+233-594-162-758",
       "contactType": "customer service",
       "areaServed": "GH",
       "availableLanguage": ["English", "Twi"],
     },
   ],
   "sameAs": [
-    "https://wa.me/233555600371",
+    "https://wa.me/233594162758",
   ],
 };
 
@@ -186,7 +186,7 @@ const storeSchema = {
   "url": siteUrl,
   "image": `${siteUrl}/og-image.png`,
   "logo": `${siteUrl}/logo.png`,
-  "telephone": "+233-555-600-371",
+  "telephone": "+233-594-162-758",
   "email": "info@rnhimports.com",
   "address": {
     "@type": "PostalAddress",
@@ -268,7 +268,7 @@ const faqSchema = {
       "name": "How can I contact RNH Imports?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "You can reach us via WhatsApp at +233 555 600 371, email at info@rnhimports.com, or through our contact page. We respond Monday to Saturday.",
+        "text": "You can reach us via WhatsApp at 0594 162 758, email at info@rnhimports.com, or through our contact page. We respond Monday to Saturday.",
       },
     },
     {
