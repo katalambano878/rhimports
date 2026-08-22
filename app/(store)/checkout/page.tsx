@@ -612,6 +612,7 @@ export default function CheckoutPage() {
                       </div>
                     </label>
 
+                    {/* Moolre temporarily hidden — leave only Hubtel
                     <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-colors ${paymentMethod === 'moolre' ? 'border-gray-900 bg-gray-50' : 'border-gray-300 hover:border-gray-400'}`}>
                       <input
                         type="radio"
@@ -627,6 +628,7 @@ export default function CheckoutPage() {
                         <p className="text-xs text-gray-600 truncate">MTN, Vodafone, AirtelTigo</p>
                       </div>
                     </label>
+                    */}
                   </div>
 
                   <div className="flex flex-col-reverse md:flex-row gap-4 mt-6">
