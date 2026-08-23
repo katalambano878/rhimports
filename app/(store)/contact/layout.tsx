@@ -5,7 +5,7 @@ const SITE = 'RNH Imports';
 export const metadata: Metadata = {
   title: 'Contact Us',
   description:
-    'Get in touch with RNH Imports. Reach us on WhatsApp at 0594 162 758, email info@rnhimports.com, or visit us in Amasaman, Accra. We respond Monday to Saturday.',
+    'Get in touch with RNH Imports. Reach us on WhatsApp at 024 220 5331, email info@rnhimports.com, or visit us in Amasaman, Accra. We respond Monday to Saturday.',
   keywords: [
     'contact RNH Imports', 'RNH Imports phone number', 'RNH Imports WhatsApp',
     'electronics store Accra contact', 'RNH Imports email', 'Amasaman electronics store',

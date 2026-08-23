@@ -524,16 +524,18 @@ export default function Home() {
               href={waHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="relative z-10 w-full max-w-[280px] shrink-0 rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/15 hover:scale-[1.02] transition-transform"
+              className="relative z-10 w-full max-w-[280px] shrink-0 rounded-2xl bg-white p-6 text-center shadow-2xl ring-1 ring-white/15 hover:scale-[1.02] transition-transform"
               aria-label={`Chat on WhatsApp at ${contactPhone}`}
             >
-              <Image
-                src="/whatsapp-number-announcement.png"
-                alt={`R&H Imports new WhatsApp number ${contactPhone}`}
-                width={560}
-                height={700}
-                className="w-full h-auto"
-              />
+              <span className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#25D366] text-white mb-4">
+                <i className="ri-whatsapp-fill text-2xl" />
+              </span>
+              <p className="text-[10px] font-bold tracking-[0.18em] uppercase text-[#1B2A6B]/60 mb-2">
+                Our new WhatsApp
+              </p>
+              <p className="text-2xl font-bold text-[#1B2A6B] tracking-wide">
+                {contactPhone}
+              </p>
             </a>
 
 

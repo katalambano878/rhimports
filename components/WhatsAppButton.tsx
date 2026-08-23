@@ -16,7 +16,7 @@ export default function WhatsAppButton() {
     getSetting('social_whatsapp') || getSetting('contact_phone') || DEFAULT_CONTACT_PHONE;
   if (!contactPhone) return null;
 
-  // Normalize a local GH number (e.g. 0594 162 758) to wa.me format (233594162758).
+  // Normalize a local GH number (e.g. 024 220 5331) to wa.me format (233242205331).
   const digits = contactPhone.replace(/\D/g, '');
   const waNumber = digits.startsWith('233')
     ? digits

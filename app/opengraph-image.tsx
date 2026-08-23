@@ -39,7 +39,7 @@ export default async function OGImage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <span style={{ color: 'rgba(255,255,255,0.95)', fontSize: 22, fontWeight: 400 }}>
-              +233 594 162 758
+              +233 24 220 5331
             </span>
             <span style={{ color: 'rgba(255,255,255,0.85)', fontSize: 18, fontWeight: 400, marginTop: 4 }}>
               Amasaman, Accra — Ghana

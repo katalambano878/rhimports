@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { DEFAULT_WHATSAPP_DISPLAY, whatsAppHref } from '@/lib/contact';
 
-const STORAGE_KEY = 'rnh-whatsapp-number-banner-dismissed-0594162758';
+const STORAGE_KEY = 'rnh-whatsapp-number-banner-dismissed-0242205331';
 
 /**
  * Sitewide bar announcing the new WhatsApp number.

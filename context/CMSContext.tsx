@@ -203,7 +203,7 @@ export const defaultSettings: SiteSettings = {
     social_tiktok: '',
     social_youtube: '',
     social_snapchat: '',
-    social_whatsapp: '233594162758',
+    social_whatsapp: '233242205331',
     currency: 'GHS',
     currency_symbol: 'GH₵',
 
@@ -248,7 +248,7 @@ export const defaultSettings: SiteSettings = {
     feature3_desc: 'Accra, Kumasi, Tema and beyond',
     feature4_icon: 'ri-whatsapp-line',
     feature4_title: 'WhatsApp Support',
-    feature4_desc: 'Chat us on 0594 162 758',
+    feature4_desc: 'Chat us on 024 220 5331',
 
     // About
     about_hero_title: 'Our Story',

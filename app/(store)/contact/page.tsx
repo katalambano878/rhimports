@@ -163,14 +163,9 @@ export default function ContactPage() {
               href={`https://wa.me/233${(contactPhone || '').replace(/\s/g, '').replace(/^0/, '')}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="block bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 border border-gray-100 overflow-hidden group"
+              className="block bg-white p-8 rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 border border-gray-100 group"
             >
-              <img
-                src="/whatsapp-number-announcement.png"
-                alt={`R&H Imports new WhatsApp number ${contactPhone}`}
-                className="w-full h-auto"
-              />
-              <div className="p-5 flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[10px] font-bold tracking-[0.18em] uppercase text-[#25D366]">Our new WhatsApp</p>
                   <p className="text-xl font-bold text-[#1B2A6B]">{contactPhone}</p>

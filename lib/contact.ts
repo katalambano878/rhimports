@@ -1,11 +1,11 @@
 /** Default store phone when CMS / env not set. Replace via Admin → Settings or env. */
-export const DEFAULT_CONTACT_PHONE = '0594 162 758';
+export const DEFAULT_CONTACT_PHONE = '024 220 5331';
 
-/** Display form of the current WhatsApp number (matches customer-facing flyer). */
-export const DEFAULT_WHATSAPP_DISPLAY = '0594 162 758';
+/** Display form of the current WhatsApp number. */
+export const DEFAULT_WHATSAPP_DISPLAY = '024 220 5331';
 
 /** Ghana E.164 digits for wa.me (no +). */
-export const DEFAULT_WHATSAPP_E164 = '233594162758';
+export const DEFAULT_WHATSAPP_E164 = '233242205331';
 
 const LEGACY_PHONE_DIGITS = new Set([
   '0502300319',
@@ -14,6 +14,9 @@ const LEGACY_PHONE_DIGITS = new Set([
   '555600371',
   '0555600371',
   '233555600371',
+  '0594162758',
+  '594162758',
+  '233594162758',
 ]);
 
 /** Default store location when CMS not set. Replace via Admin → Settings or env. */

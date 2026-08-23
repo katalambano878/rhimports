@@ -24,7 +24,7 @@ Copy `.env.example` to `.env.local` and fill in your values.
 ## Contact
 
 - **Address:** Amasaman Achiaman, Annosel Junction
-- **Phone / WhatsApp:** 0594 162 758
+- **Phone / WhatsApp:** 024 220 5331
 - **Email:** info@rnhimports.com
 - **Hours:** Mon – Fri: 9am – 6pm | Saturday: 10am – 4pm
 
