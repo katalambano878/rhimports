@@ -1,32 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { DEFAULT_CONTACT_PHONE, whatsAppHref } from '@/lib/contact';
 
-const STORAGE_KEY = 'rnh-preorder-notice-seen';
-const COOLDOWN_HOURS = 24;
-
-export default function PreorderPopup() {
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    const last = localStorage.getItem(STORAGE_KEY);
-    if (!last) {
-      setOpen(true);
-      return;
-    }
-    const hoursSince = (Date.now() - Number(last)) / 36e5;
-    if (hoursSince >= COOLDOWN_HOURS) setOpen(true);
-  }, []);
-
-  const dismiss = () => {
-    setOpen(false);
-    localStorage.setItem(STORAGE_KEY, String(Date.now()));
-  };
-
-  if (!open) return null;
+export default function PreorderPopup({ onDismiss }: { onDismiss: () => void }) {
+  const dismiss = onDismiss;
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-6">

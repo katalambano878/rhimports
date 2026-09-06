@@ -285,6 +285,7 @@ export const defaultSettings: SiteSettings = {
     header_logo_height: '52',
     header_nav_links_json: JSON.stringify([
         { label: 'Shop', href: '/shop' },
+        { label: 'Fashion', href: '/fashion' },
         { label: 'Categories', href: '/categories' },
         { label: 'Services', href: '/service' },
         { label: 'About', href: '/about' },
@@ -304,6 +305,7 @@ export const defaultSettings: SiteSettings = {
     footer_col1_title: 'Shop',
     footer_col1_links_json: JSON.stringify([
         { label: 'All Products', href: '/shop' },
+        { label: 'Fashion', href: '/fashion' },
         { label: 'Categories', href: '/categories' },
         { label: 'New Arrivals', href: '/shop?sort=newest' },
         { label: 'Best Sellers', href: '/shop?sort=bestsellers' }

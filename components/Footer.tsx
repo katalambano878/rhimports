@@ -19,6 +19,7 @@ export default function Footer() {
   const contactAddress = getSetting('contact_address') || DEFAULT_CONTACT_ADDRESS;
   const links = [
     { label: 'Shop', href: '/shop' },
+    { label: 'Fashion', href: '/fashion' },
     { label: 'Services', href: '/service' },
     { label: 'About', href: '/about' },
     { label: 'Contact', href: '/contact' },

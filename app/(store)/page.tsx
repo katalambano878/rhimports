@@ -35,6 +35,15 @@ const WHY_FEATURES = [
   { icon: 'ri-customer-service-line',  title: 'Personal Support',     body: 'Chat directly on WhatsApp. Real people, fast replies, and honest advice — not a bot.' },
 ];
 
+function shuffleProducts<T>(items: T[]): T[] {
+  const next = [...items];
+  for (let i = next.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
+
 const PROCESS_STEPS = [
   { n: '01', icon: 'ri-store-2-line',  title: 'Browse & Order',        body: 'Shop online or message us on WhatsApp. Tell us the model, spec, and colour you want.' },
   { n: '02', icon: 'ri-plane-line',    title: 'We Source & Import',    body: 'We procure from verified suppliers in China, manage shipping, and handle customs clearance.' },
@@ -71,7 +80,7 @@ export default function Home() {
             .select('id, name, slug, image_url, metadata')
             .eq('status', 'active').order('name'),
         ]);
-        setFeaturedProducts(productsRes.data || []);
+        setFeaturedProducts(shuffleProducts(productsRes.data || []));
         const all = categoriesRes.data || [];
         const featured = all.filter((c: any) => c.metadata?.featured === true);
         setCategories((featured.length ? featured : all).slice(0, 6));
@@ -298,7 +307,7 @@ export default function Home() {
             </div>
           ) : featuredProducts.length > 0 ? (
             <AnimatedGrid className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-6 lg:gap-8">
-              {[...featuredProducts].reverse().map(buildCard)}
+              {featuredProducts.map(buildCard)}
             </AnimatedGrid>
           ) : (
             <div className="text-center py-20 border-2 border-dashed border-gray-100 rounded-3xl">

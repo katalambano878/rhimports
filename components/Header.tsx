@@ -27,6 +27,7 @@ const SHOP_CATEGORIES = [
   { icon: 'ri-headphone-line',    label: 'Audio',        href: '/shop?category=audio',         desc: 'Beats, Bose, Sony' },
   { icon: 'ri-heart-pulse-line',  label: 'Wearables',    href: '/shop?category=wearables',     desc: 'Apple Watch, Galaxy Watch' },
   { icon: 'ri-tv-2-line',         label: 'TVs & Displays', href: '/shop?category=tv-displays', desc: 'Smart TVs, Monitors' },
+  { icon: 'ri-t-shirt-line',      label: 'Fashion',       href: '/fashion',                    desc: 'Streetwear, tops & trousers' },
 ];
 
 const QUICK_SEARCH_TERMS = ['Laptops', 'iPhones', 'iPads', 'Sony Cameras', 'Beats Headphones', 'Xbox', 'Smart Watches'];
@@ -67,6 +68,7 @@ export default function Header() {
 
   const navLinks = getSettingJSON<{ label: string; href: string }[]>('header_nav_links_json', [
     { label: 'Shop',       href: '/shop' },
+    { label: 'Fashion',    href: '/fashion' },
     { label: 'Categories', href: '/categories' },
     { label: 'Services',   href: '/service' },
     { label: 'About',      href: '/about' },
@@ -572,6 +574,7 @@ export default function Header() {
               {[
                 { href: '/',           icon: 'ri-home-line',              label: 'Home' },
                 { href: '/shop',       icon: 'ri-store-line',             label: 'Shop' },
+                { href: '/fashion',    icon: 'ri-t-shirt-line',           label: 'Fashion' },
                 { href: '/categories', icon: 'ri-grid-line',              label: 'All Categories' },
                 { href: '/service',    icon: 'ri-tools-line',             label: 'Services' },
                 { href: '/about',      icon: 'ri-information-line',       label: 'About Us' },
