@@ -11,6 +11,7 @@ import { usePageTitle } from '@/hooks/usePageTitle';
 import { motion, AnimatePresence } from 'framer-motion';
 import { HERO_SLIDES_HOME } from '@/lib/hero-images';
 import { DEFAULT_CONTACT_PHONE } from '@/lib/contact';
+import FashionHomeBanner from '@/components/FashionHomeBanner';
 
 // ── Static data (no DB dependency) ─────────────────────────────────────────
 
@@ -281,11 +282,12 @@ export default function Home() {
         </div>
       </div>
 
+      <FashionHomeBanner />
 
       {/* ══════════════════════════════════════════════════════════
           4 · FEATURED PRODUCTS
       ══════════════════════════════════════════════════════════ */}
-      <section className="pt-24 pb-14 lg:pb-16 bg-white">
+      <section className="pt-16 sm:pt-20 pb-14 lg:pb-16 bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <AnimatedSection className="text-center mb-14">
             <span className="text-gray-400 font-bold tracking-widest uppercase text-[10px] mb-3 block">Fresh in</span>

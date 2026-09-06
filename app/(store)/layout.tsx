@@ -19,7 +19,7 @@ const OfflineIndicator = dynamic(() => import('@/components/OfflineIndicator'), 
 const NetworkStatusMonitor = dynamic(() => import('@/components/NetworkStatusMonitor'), { ssr: false });
 const UpdatePrompt = dynamic(() => import('@/components/UpdatePrompt'), { ssr: false });
 const LiveSalesNotification = dynamic(() => import('@/components/LiveSalesNotification'), { ssr: false });
-const StorePopups = dynamic(() => import('@/components/StorePopups'), { ssr: false });
+const PreorderPopup = dynamic(() => import('@/components/PreorderPopup'), { ssr: false });
 const WhatsAppButton = dynamic(() => import('@/components/WhatsAppButton'), { ssr: false });
 const WhatsAppAnnouncementBanner = dynamic(() => import('@/components/WhatsAppAnnouncementBanner'), { ssr: false });
 
@@ -50,7 +50,7 @@ export default function StoreLayout({
         <NetworkStatusMonitor />
         <UpdatePrompt />
         <LiveSalesNotification />
-        <StorePopups />
+        <PreorderPopup />
         <WhatsAppButton />
       </div>
     </CMSProvider>
