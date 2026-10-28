@@ -1,0 +1,96 @@
+// Shared Postgres connection pool for the app's in-process backend.
+//
+// Replaces the Supabase/PostgREST data plane. Every ported edge function talks
+// to Postgres through the supabase-compat client, which uses this pool.
+
+import { AsyncLocalStorage } from "async_hooks";
+import { Pool, types, type PoolClient } from "pg";
+
+// --- PostgREST-faithful type parsing ---------------------------------------
+// Supabase (PostgREST) serializes these as JSON strings/numbers; node-postgres
+// defaults to JS Date objects and strings, which breaks code that compares
+// `due_date === "2026-06-17"` or does arithmetic on numeric columns.
+types.setTypeParser(1082, (v: string) => v); // date -> "YYYY-MM-DD"
+types.setTypeParser(1114, (v: string) => (v ? v.replace(" ", "T") : v)); // timestamp
+types.setTypeParser(1184, (v: string) => {
+  // timestamptz "2026-06-17 12:34:56.789+00" -> "2026-06-17T12:34:56.789+00:00"
+  if (!v) return v;
+  let s = v.replace(" ", "T");
+  s = s.replace(/([+-]\d{2})$/, "$1:00");
+  return s;
+});
+types.setTypeParser(1700, (v: string | null) => (v === null ? null : parseFloat(v))); // numeric
+types.setTypeParser(20, (v: string | null) => (v === null ? null : parseInt(v, 10))); // int8
+
+let _pool: Pool | null = null;
+
+// A request that must run under Postgres RLS (see lib/db/rls.ts) binds a
+// dedicated client here; every query issued inside it goes through that
+// client's transaction instead of the shared pool.
+const scopedClient = new AsyncLocalStorage<PoolClient>();
+
+export function runWithClient<T>(client: PoolClient, fn: () => Promise<T>): Promise<T> {
+  return scopedClient.run(client, fn);
+}
+
+export function getPool(): Pool {
+  const scoped = scopedClient.getStore();
+  if (scoped) return scoped as unknown as Pool;
+  return getSharedPool();
+}
+
+export function getSharedPool(): Pool {
+  if (_pool) return _pool;
+  const connectionString =
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    "";
+  if (!connectionString) {
+    throw new Error(
+      "DATABASE_URL is not set, so the Postgres backend cannot start."
+    );
+  }
+  _pool = new Pool({
+    connectionString,
+    max: Number(process.env.PG_POOL_MAX || 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 10_000),
+    // Self-hosted Postgres on the same host / private network: TLS optional.
+    ssl:
+      process.env.PGSSL === "require"
+        ? { rejectUnauthorized: false }
+        : undefined,
+  });
+  _pool.on("connect", (client) => {
+    const ms = Math.max(
+      1000,
+      Math.min(120_000, Number(process.env.PG_STATEMENT_TIMEOUT_MS || 30_000) || 30_000)
+    );
+    const lockMs = Math.max(
+      1000,
+      Math.min(60_000, Number(process.env.PG_LOCK_TIMEOUT_MS || 10_000) || 10_000)
+    );
+    const idleTxMs = Math.max(
+      5_000,
+      Math.min(300_000, Number(process.env.PG_IDLE_IN_TX_TIMEOUT_MS || 60_000) || 60_000)
+    );
+    // Fail closed on hung statements / locks / abandoned transactions
+    Promise.all([
+      client.query(`SET statement_timeout TO '${ms}ms'`),
+      client.query(`SET lock_timeout TO '${lockMs}ms'`),
+      client.query(`SET idle_in_transaction_session_timeout TO '${idleTxMs}ms'`),
+    ]).catch(() => {
+      /* non-fatal on older Postgres */
+    });
+  });
+  return _pool;
+}
+
+export async function query<T = any>(
+  text: string,
+  params: unknown[] = []
+): Promise<{ rows: T[]; rowCount: number }> {
+  const pool = getPool();
+  const res = await pool.query(text, params as any[]);
+  return { rows: res.rows as T[], rowCount: res.rowCount ?? 0 };
+}

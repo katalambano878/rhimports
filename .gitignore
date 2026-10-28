@@ -43,3 +43,6 @@ supabase/.temp
 # TypeScript build artifacts
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+# plain-postgres migration exports (PII)
+migration-artifacts/

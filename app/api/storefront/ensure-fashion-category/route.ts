@@ -1,21 +1,11 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServerSupabase } from '@/lib/supabase-server';
 import { FASHION_CATEGORY_SLUG, FASHION_HERO_IMAGE } from '@/lib/fashion';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !(serviceKey || anonKey)) {
-    return NextResponse.json({ success: false, message: 'Supabase is not configured' }, { status: 500 });
-  }
-
-  const supabase = createClient(url, serviceKey || anonKey!, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
+  const supabase = createServerSupabase('service');
 
   const { data: existing, error: lookupError } = await supabase
     .from('categories')

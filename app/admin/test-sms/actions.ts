@@ -1,6 +1,6 @@
 'use server';
 
-import { createClient } from '@supabase/supabase-js';
+import { createServerSupabase } from '@/lib/supabase-server';
 
 // Verify the caller is an authenticated admin/staff user before performing any
 // privileged action. Server actions are directly invocable, so this guard is
@@ -8,13 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 async function assertAdmin(accessToken?: string): Promise<{ ok: boolean; error?: string }> {
     if (!accessToken) return { ok: false, error: 'Unauthorized' };
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!supabaseUrl || !serviceKey) return { ok: false, error: 'Server auth not configured' };
-
-    const admin = createClient(supabaseUrl, serviceKey, {
-        auth: { autoRefreshToken: false, persistSession: false },
-    });
+    const admin = createServerSupabase('service');
 
     const { data: { user }, error } = await admin.auth.getUser(accessToken);
     if (error || !user) return { ok: false, error: 'Unauthorized' };

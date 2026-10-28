@@ -1,19 +1,10 @@
 import { Resend } from 'resend';
-import { createClient } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
+import { createServerSupabase } from '@/lib/supabase-server';
 import { DEFAULT_CONTACT_PHONE } from '@/lib/contact';
 
 // Server-side client that bypasses RLS for reads we make while building
-// notifications (e.g. order items). Falls back to the anon client if the
-// service role key is unavailable (it is never exposed to the browser).
-const supabaseAdmin =
-    process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.NEXT_PUBLIC_SUPABASE_URL
-        ? createClient(
-              process.env.NEXT_PUBLIC_SUPABASE_URL,
-              process.env.SUPABASE_SERVICE_ROLE_KEY,
-              { auth: { autoRefreshToken: false, persistSession: false } }
-          )
-        : supabase;
+// notifications (e.g. order items).
+const supabaseAdmin = createServerSupabase('service');
 
 const resend = new Resend(process.env.RESEND_API_KEY || 'missing_api_key');
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com';
@@ -654,6 +645,32 @@ ${emailButton('Start Shopping', `${BRAND.url}/shop`)}
             message: `Welcome ${firstName}! Thanks for joining ${BRAND.name}.`
         });
     }
+}
+
+export async function sendSignupConfirmation(email: string, confirmUrl: string) {
+    return sendEmail({
+        to: email,
+        subject: 'Confirm Your Signup',
+        html: emailLayout(`
+<h2 style="margin:0 0 8px;color:#111827;font-size:22px;text-align:center;">Confirm your email</h2>
+<p style="color:#374151;font-size:14px;line-height:1.7;margin:16px 0;text-align:center;">Thanks for creating a ${BRAND.name} account. Tap the button below to confirm your email address and activate your account.</p>
+${emailButton('Confirm My Email', confirmUrl)}
+<p style="color:#9ca3af;font-size:12px;line-height:1.6;margin:16px 0 0;text-align:center;">If you didn't create an account, you can ignore this email.</p>
+`, `Confirm your ${BRAND.name} account`),
+    });
+}
+
+export async function sendPasswordReset(email: string, resetUrl: string) {
+    return sendEmail({
+        to: email,
+        subject: 'Reset Your Password',
+        html: emailLayout(`
+<h2 style="margin:0 0 8px;color:#111827;font-size:22px;text-align:center;">Reset your password</h2>
+<p style="color:#374151;font-size:14px;line-height:1.7;margin:16px 0;text-align:center;">We received a request to reset the password for your ${BRAND.name} account. This link expires in 1 hour.</p>
+${emailButton('Choose a New Password', resetUrl)}
+<p style="color:#9ca3af;font-size:12px;line-height:1.6;margin:16px 0 0;text-align:center;">If you didn't ask for this, you can ignore this email &mdash; your password won't change.</p>
+`, `Reset your ${BRAND.name} password`),
+    });
 }
 
 export async function sendPaymentLink(order: any) {

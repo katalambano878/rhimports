@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServerSupabase } from '@/lib/supabase-server';
 import { checkRateLimit, getClientIdentifier, RATE_LIMITS } from '@/lib/rate-limit';
 import {
   hubtelCheckTransactionStatus,
@@ -13,9 +13,7 @@ import {
   hubtelStatusIsPaid,
 } from '@/lib/hubtel-order';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createServerSupabase('service');
 
 async function parseCallbackBody(req: Request): Promise<Record<string, unknown>> {
   const contentType = req.headers.get('content-type') || '';

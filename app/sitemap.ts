@@ -1,8 +1,8 @@
 import { MetadataRoute } from 'next';
-import { createClient } from '@supabase/supabase-js';
+import { createServerSupabase } from '@/lib/supabase-server';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+type SlugRow = { slug: string | null; updated_at: string | null };
 
 /** Only include slugs that are valid for URLs (no empty, no slashes, no unsafe chars). */
 function isValidSlug(slug: string | null | undefined): slug is string {
@@ -41,7 +41,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   let categoryPages: MetadataRoute.Sitemap = [];
 
   try {
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = createServerSupabase('anon');
 
     const { data: products } = await supabase
       .from('products')
@@ -50,8 +50,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
     if (products?.length) {
       productPages = products
-        .filter((p) => isValidSlug(p.slug))
-        .map((product) => ({
+        .filter((p: SlugRow) => isValidSlug(p.slug))
+        .map((product: SlugRow) => ({
           url: `${baseUrl}/product/${encodeURIComponent(product.slug!.trim())}`,
           lastModified: safeLastModified(product.updated_at),
           changeFrequency: 'weekly' as const,
@@ -66,8 +66,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
     if (categories?.length) {
       categoryPages = categories
-        .filter((c) => isValidSlug(c.slug))
-        .map((category) => ({
+        .filter((c: SlugRow) => isValidSlug(c.slug))
+        .map((category: SlugRow) => ({
           url: `${baseUrl}/shop?category=${encodeURIComponent(category.slug!.trim())}`,
           lastModified: safeLastModified(category.updated_at),
           changeFrequency: 'weekly' as const,

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useRecaptcha } from '@/hooks/useRecaptcha';
+import { supabase } from '@/lib/supabase';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -35,10 +36,20 @@ export default function ForgotPasswordPage() {
       return;
     }
 
-    setTimeout(() => {
-      setIsLoading(false);
-      setIsSubmitted(true);
-    }, 1500);
+    const appBaseUrl = (process.env.NEXT_PUBLIC_APP_URL || window.location.origin).replace(/\/+$/, '');
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${appBaseUrl}/auth/reset-password`,
+    });
+    setIsLoading(false);
+    if (resetError) {
+      setError(
+        resetError.status === 429
+          ? 'Too many reset requests. Please wait a while and try again.'
+          : 'Could not send the reset email. Please try again.'
+      );
+      return;
+    }
+    setIsSubmitted(true);
   };
 
   if (isSubmitted) {

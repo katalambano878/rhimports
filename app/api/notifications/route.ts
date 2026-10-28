@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServerSupabase } from '@/lib/supabase-server';
 import { sendOrderConfirmation, sendOrderStatusUpdate, sendWelcomeMessage, sendContactMessage, sendPaymentLink, sendEmail, sendSMS, emailLayout, escapeHtml } from '@/lib/notifications';
 import { checkRateLimit, getClientIdentifier, RATE_LIMITS } from '@/lib/rate-limit';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-// Use service role key on server-side to bypass RLS for admin verification
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export async function POST(request: Request) {
     try {
@@ -34,7 +31,7 @@ export async function POST(request: Request) {
         }
 
         // Use service role key to bypass RLS for server-side operations
-        const supabase = createClient(supabaseUrl, supabaseServiceKey);
+        const supabase = createServerSupabase('service');
 
         // Authentication requirements based on notification type
         // 'campaign', 'order_updated', 'order_status', 'payment_link' require admin/staff role
