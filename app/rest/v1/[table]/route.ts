@@ -41,9 +41,9 @@ function preferCount(req: NextRequest): boolean {
   return prefer.includes("count=exact");
 }
 
-function jsonError(message: string, status = 400) {
+function jsonError(message: string, status = 400, code = "PGRST") {
   return NextResponse.json(
-    { message, code: "PGRST", details: null, hint: null },
+    { message, code, details: null, hint: null },
     { status, headers: corsHeaders() }
   );
 }
@@ -57,7 +57,9 @@ async function actorOrError(req: NextRequest): Promise<RlsActor | NextResponse> 
   }
 }
 
-function failure(actor: RlsActor, message: string | undefined, fallback: string) {
+function failure(actor: RlsActor, message: string | undefined, fallback: string, code?: string) {
+  // PostgREST answers single() with no or several rows as 406 / PGRST116.
+  if (code === "PGRST116") return jsonError(message || fallback, 406, code);
   return jsonError(message || fallback, rlsDeniedStatus(actor, message) ?? 400);
 }
 
@@ -96,7 +98,7 @@ export async function GET(
   });
 
   const result = await withRls(actor, async () => await qb);
-  if (result.error) return failure(actor, result.error.message, "Query failed");
+  if (result.error) return failure(actor, result.error.message, "Query failed", result.error.code);
 
   const headers = new Headers(corsHeaders());
   headers.set("Content-Type", "application/json");

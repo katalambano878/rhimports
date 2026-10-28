@@ -714,7 +714,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
                 rows.length === 0
                   ? "JSON object requested, multiple (or no) rows returned"
                   : "Results contain more than one row",
-              code: rows.length === 0 ? "PGRST116" : "PGRST114",
+              code: "PGRST116",
             },
             count,
           };
