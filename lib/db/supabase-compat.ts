@@ -450,7 +450,10 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
     if (value === null || value === "null") return `${ident(col)} IS NULL`;
     if (value === true || value === "true") return `${ident(col)} IS TRUE`;
     if (value === false || value === "false") return `${ident(col)} IS FALSE`;
-    return `${ident(col)} IS NOT DISTINCT FROM ${value}`;
+    if (value === "unknown") return `${ident(col)} IS UNKNOWN`;
+    // PostgREST only accepts null/true/false/unknown here; never interpolate
+    // anything else into SQL.
+    throw new Error(`Unsupported value for is: ${String(value).slice(0, 40)}`);
   }
 
   private cmpClause(col: string, op: string, value: any, params: any[]): string {
@@ -1206,6 +1209,17 @@ export function applyPostgrestParams(
     if (dot === -1) continue;
     const op = raw.slice(0, dot);
     const value = raw.slice(dot + 1);
+    if (op === "not") {
+      // PostgREST negation: col=not.is.null, col=not.in.(a,b), col=not.eq.x
+      const d2 = value.indexOf(".");
+      if (d2 === -1) continue;
+      const nop = value.slice(0, d2);
+      const nval = value.slice(d2 + 1);
+      if (nop === "is") qb.not(key, "is", nval === "null" ? null : coerce(nval));
+      else if (nop === "in") qb.not(key, "in", nval);
+      else qb.not(key, nop, coerce(nval));
+      continue;
+    }
     if (op === "eq") qb.eq(key, coerce(value));
     else if (op === "neq") qb.neq(key, coerce(value));
     else if (op === "gt") qb.gt(key, coerce(value));
