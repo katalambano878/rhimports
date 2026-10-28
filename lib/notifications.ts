@@ -219,7 +219,12 @@ export async function sendEmail({ to, subject, html }: { to: string; subject: st
             subject,
             html,
         });
-        console.log('[Email] Sent successfully to:', to.split('@')[0] + '@***');
+        // resend v6 reports failures in the result instead of throwing.
+        if (data.error) {
+            console.error('[Email] Failed:', data.error.name, data.error.message);
+            return null;
+        }
+        console.log('[Email] Sent successfully to:', to.split('@')[0] + '@***', data.data?.id);
         return data;
     } catch (error: any) {
         console.error('[Email] Failed:', error.message);
