@@ -18,17 +18,31 @@ interface SearchResult {
   category: string;
 }
 
-const SHOP_CATEGORIES = [
-  { icon: 'ri-computer-line',     label: 'Laptops',      href: '/shop?category=laptops',      desc: 'MacBooks, Dell, HP & more' },
-  { icon: 'ri-smartphone-line',   label: 'Phones',       href: '/shop?category=smartphones',   desc: 'iPhones, Samsung, Pixel' },
-  { icon: 'ri-tablet-line',       label: 'Tablets',      href: '/shop?category=tablets',       desc: 'iPads, Galaxy Tab & more' },
-  { icon: 'ri-camera-line',       label: 'Cameras',      href: '/shop?category=cameras',       desc: 'Sony, Canon, Fujifilm' },
-  { icon: 'ri-gamepad-line',      label: 'Gaming',       href: '/shop?category=gaming',        desc: 'Xbox, PlayStation, Nintendo' },
-  { icon: 'ri-headphone-line',    label: 'Audio',        href: '/shop?category=audio',         desc: 'Beats, Bose, Sony' },
-  { icon: 'ri-heart-pulse-line',  label: 'Wearables',    href: '/shop?category=wearables',     desc: 'Apple Watch, Galaxy Watch' },
-  { icon: 'ri-tv-2-line',         label: 'TVs & Displays', href: '/shop?category=tv-displays', desc: 'Smart TVs, Monitors' },
-  { icon: 'ri-t-shirt-line',      label: 'Fashion',       href: '/fashion',                    desc: 'Streetwear, tops & trousers' },
+/** Shown in the shop menu when a real category's slug or name matches one of these words. */
+const CATEGORY_STYLES: { match: string[]; icon: string; desc: string }[] = [
+  { match: ['laptop', 'computer', 'macbook'], icon: 'ri-computer-line',    desc: 'MacBooks, Dell, HP & more' },
+  { match: ['phone', 'smartphone', 'iphone'], icon: 'ri-smartphone-line',  desc: 'iPhones, Samsung, Pixel' },
+  { match: ['tablet', 'ipad'],                icon: 'ri-tablet-line',      desc: 'iPads, Galaxy Tab & more' },
+  { match: ['camera'],                        icon: 'ri-camera-line',      desc: 'Sony, Canon, Fujifilm' },
+  { match: ['gaming', 'console', 'game'],     icon: 'ri-gamepad-line',     desc: 'Xbox, PlayStation, Nintendo' },
+  { match: ['audio', 'headphone', 'speaker'], icon: 'ri-headphone-line',   desc: 'Beats, Bose, Sony' },
+  { match: ['wearable', 'watch'],             icon: 'ri-heart-pulse-line', desc: 'Apple Watch, Galaxy Watch' },
+  { match: ['tv', 'display', 'monitor'],      icon: 'ri-tv-2-line',        desc: 'Smart TVs, Monitors' },
+  { match: ['accessor'],                      icon: 'ri-plug-line',        desc: 'Chargers, cases & more' },
 ];
+
+type MenuCategory = { icon: string; label: string; href: string; desc: string };
+
+const FASHION_LINK: MenuCategory = { icon: 'ri-t-shirt-line', label: 'Fashion', href: '/fashion', desc: 'Streetwear, tops & trousers' };
+
+function styleFor(slug: string, name: string) {
+  const key = `${slug} ${name}`.toLowerCase();
+  return CATEGORY_STYLES.find((c) => c.match.some((m) => key.includes(m)));
+}
+
+/** Product image fallback (no file needed): a light grey box with an image icon. */
+const PLACEHOLDER_IMAGE =
+  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 80 80%27%3E%3Crect width=%2780%27 height=%2780%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M26 52l10-12 8 9 6-7 10 10H26z%27 fill=%27%23d1d5db%27/%3E%3Ccircle cx=%2734%27 cy=%2732%27 r=%274%27 fill=%27%23d1d5db%27/%3E%3C/svg%3E";
 
 const QUICK_SEARCH_TERMS = ['Laptops', 'iPhones', 'iPads', 'Sony Cameras', 'Beats Headphones', 'Xbox', 'Smart Watches'];
 
@@ -44,6 +58,8 @@ export default function Header() {
   const [isScrolled, setIsScrolled]               = useState(false);
   const [activeMegaMenu, setActiveMegaMenu]       = useState<string | null>(null);
   const [logoError, setLogoError]                 = useState(false);
+
+  const [menuCategories, setMenuCategories]     = useState<MenuCategory[]>([FASHION_LINK]);
 
   const searchInputRef   = useRef<HTMLInputElement>(null);
   const searchTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,6 +108,33 @@ export default function Header() {
     return () => { window.removeEventListener('wishlistUpdated', syncWishlist); subscription.unsubscribe(); };
   }, []);
 
+  // ── shop menu: only categories that exist ─────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    supabase
+      .from('categories')
+      .select('id, name, slug, position')
+      .eq('status', 'active')
+      .order('position', { ascending: true })
+      .then(({ data, error }: { data: any[] | null; error: any }) => {
+        if (cancelled || error || !data) return;
+        const real: MenuCategory[] = data
+          .filter((c: any) => c.slug && c.slug !== 'fashion')
+          .slice(0, 8)
+          .map((c: any) => {
+            const style = styleFor(c.slug, c.name || '');
+            return {
+              icon: style?.icon || 'ri-price-tag-3-line',
+              label: c.name || c.slug,
+              href: `/shop?category=${encodeURIComponent(c.slug)}`,
+              desc: style?.desc || 'Browse this category',
+            };
+          });
+        setMenuCategories([...real, FASHION_LINK]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   // ── search ────────────────────────────────────────────────────────
   const fetchSearchResults = useCallback(async (q: string) => {
     const trimmed = q.trim();
@@ -100,13 +143,14 @@ export default function Header() {
     try {
       const { data } = await supabase
         .from('products')
-        .select('id, slug, name, price, categories!inner(name), product_images!product_id(url, position)')
+        .select('id, slug, name, price, categories(name), product_images!product_id(url, position)')
+        .eq('status', 'active')
         .ilike('name', `%${trimmed}%`)
         .order('position', { foreignTable: 'product_images', ascending: true })
         .limit(8);
       setSearchResults((data || []).map((p: any) => ({
         id: p.id, slug: p.slug, name: p.name, price: p.price,
-        image: p.product_images?.[0]?.url || '/placeholder.png',
+        image: p.product_images?.[0]?.url || PLACEHOLDER_IMAGE,
         category: p.categories?.name || '',
       })));
     } catch { setSearchResults([]); }
@@ -164,6 +208,9 @@ export default function Header() {
             </span>
           </div>
           <div className="flex items-center gap-4 text-white/70">
+            <Link href="/order-tracking" className="flex items-center gap-1.5 hover:text-white transition-colors">
+              <i className="ri-map-pin-line" aria-hidden="true" />Track order
+            </Link>
             <a href={`tel:${contactPhone}`} className="flex items-center gap-1.5 hover:text-white transition-colors">
               <i className="ri-phone-line" />{contactPhone}
             </a>
@@ -333,7 +380,7 @@ export default function Header() {
                     Shop by Category
                   </p>
                   <div className="grid grid-cols-4 gap-2.5">
-                    {SHOP_CATEGORIES.map((cat) => (
+                    {menuCategories.map((cat) => (
                       <Link
                         key={cat.href}
                         href={cat.href}
@@ -341,7 +388,7 @@ export default function Header() {
                         className="flex items-start gap-3 p-3.5 rounded-2xl hover:bg-primary/5 border border-transparent hover:border-primary/10 transition-all group"
                       >
                         <div className="w-9 h-9 rounded-xl bg-primary/8 flex items-center justify-center shrink-0 group-hover:bg-primary group-hover:shadow-md transition-all duration-200">
-                          <i className={`${cat.icon} text-primary group-hover:text-white text-lg transition-colors`} />
+                          <i className={`${cat.icon} text-primary group-hover:text-white text-lg transition-colors`} aria-hidden="true" />
                         </div>
                         <div className="min-w-0 pt-0.5">
                           <p className="text-sm font-semibold text-gray-900 group-hover:text-primary transition-colors leading-tight">{cat.label}</p>
@@ -377,12 +424,12 @@ export default function Header() {
                     </span>
                     <h3 className="font-serif text-xl leading-snug mb-2">Fresh imports, just landed</h3>
                     <p className="text-white/55 text-sm leading-relaxed">
-                      Laptops, cameras, phones and more — direct from verified suppliers in China.
+                      Laptops, cameras, phones and more from verified suppliers abroad. Preorders arrive in 45–60 days.
                     </p>
                   </div>
                   <div className="relative mt-6 space-y-2">
                     <Link
-                      href="/shop?sort=newest"
+                      href="/shop?sort=new"
                       onClick={() => setActiveMegaMenu(null)}
                       className="flex items-center justify-center gap-2 w-full bg-white text-[#1B2A6B] px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-white/90 transition-colors"
                     >
@@ -472,7 +519,13 @@ export default function Header() {
                           onClick={closeSearch}
                         >
                           <div className="w-14 h-14 rounded-xl overflow-hidden bg-gray-100 shrink-0">
-                            <img src={product.image} alt={product.name} className="w-full h-full object-cover object-top" />
+                            <img
+                              src={product.image}
+                              alt=""
+                              loading="lazy"
+                              onError={(e) => { if (e.currentTarget.src !== PLACEHOLDER_IMAGE) e.currentTarget.src = PLACEHOLDER_IMAGE; }}
+                              className="w-full h-full object-cover object-top"
+                            />
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold text-gray-900 truncate leading-tight">{product.name}</p>
@@ -576,6 +629,7 @@ export default function Header() {
                 { href: '/shop',       icon: 'ri-store-line',             label: 'Shop' },
                 { href: '/fashion',    icon: 'ri-t-shirt-line',           label: 'Fashion' },
                 { href: '/categories', icon: 'ri-grid-line',              label: 'All Categories' },
+                { href: '/order-tracking', icon: 'ri-map-pin-line',       label: 'Track Order' },
                 { href: '/service',    icon: 'ri-tools-line',             label: 'Services' },
                 { href: '/about',      icon: 'ri-information-line',       label: 'About Us' },
                 { href: '/contact',    icon: 'ri-customer-service-line',  label: 'Contact' },

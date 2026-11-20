@@ -1,23 +1,37 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useRecaptcha } from '@/hooks/useRecaptcha';
+import { safeInternalPath } from '../safe-next';
 
 export default function LoginPage() {
   const router = useRouter();
   const [formData, setFormData] = useState({
     email: '',
     password: '',
-    rememberMe: false
   });
+  const [redirectTo, setRedirectTo] = useState('/account');
+  const [notice, setNotice] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<any>({});
   const [isLoading, setIsLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   const { getToken, verifying } = useRecaptcha();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setRedirectTo(safeInternalPath(params.get('redirect') || params.get('next'), '/account'));
+    if (params.get('changed') === '1') {
+      setNotice('Password changed. Please sign in with your new password.');
+    } else if (params.get('reset') === 'success') {
+      setNotice('Password changed. Please sign in again with your new password.');
+    } else if (params.get('verified') === '1') {
+      setNotice('Your email is confirmed. Sign in to continue.');
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,12 +75,13 @@ export default function LoginPage() {
       }
 
       if (data.session) {
-        router.push('/account');
+        router.push(redirectTo);
         router.refresh(); // Refresh to update auth state in other components
       }
     } catch (error: any) {
       console.error('Login error:', error);
-      setAuthError(error.message || 'Failed to sign in. Please check your credentials.');
+      // Show the server's message (wrong password, too many attempts, …).
+      setAuthError(error?.message || 'The request could not be completed.');
     } finally {
       setIsLoading(false);
     }
@@ -85,9 +100,16 @@ export default function LoginPage() {
             </p>
           </div>
 
+          {notice && !authError && (
+            <div role="status" className="mb-6 p-4 rounded-xl bg-green-50 border border-green-200 text-green-800 text-sm flex items-start gap-2">
+              <i className="ri-checkbox-circle-fill text-lg mt-0.5" aria-hidden="true" />
+              <span>{notice}</span>
+            </div>
+          )}
+
           {authError && (
-            <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm flex items-start gap-2">
-              <i className="ri-error-warning-fill text-lg mt-0.5" />
+            <div role="alert" className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm flex items-start gap-2">
+              <i className="ri-error-warning-fill text-lg mt-0.5" aria-hidden="true" />
               <span>{authError}</span>
             </div>
           )}
@@ -104,6 +126,7 @@ export default function LoginPage() {
                 <input
                   id="email"
                   type="email"
+                  autoComplete="email"
                   value={formData.email}
                   onChange={(e) =>
                     setFormData({ ...formData, email: e.target.value })
@@ -138,6 +161,7 @@ export default function LoginPage() {
               <div className="relative">
                 <input
                   id="password"
+                  autoComplete="current-password"
                   type={showPassword ? 'text' : 'password'}
                   value={formData.password}
                   onChange={(e) =>
@@ -167,24 +191,6 @@ export default function LoginPage() {
               )}
             </div>
 
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-                <input
-                  id="remember-me"
-                  type="checkbox"
-                  checked={formData.rememberMe}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      rememberMe: e.target.checked,
-                    })
-                  }
-                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                />
-                <span>Remember me</span>
-              </label>
-            </div>
-
             <button
               type="submit"
               disabled={isLoading || verifying}
@@ -202,40 +208,10 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-8">
-            <div className="relative my-4">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-200" />
-              </div>
-              <div className="relative flex justify-center text-xs">
-                <span className="bg-white px-3 text-gray-400">
-                  Or continue with
-                </span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                disabled
-                className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-              >
-                <i className="ri-google-fill text-lg text-red-500" />
-                <span>Google</span>
-              </button>
-              <button
-                type="button"
-                disabled
-                className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-              >
-                <i className="ri-facebook-fill text-lg text-blue-600" />
-                <span>Facebook</span>
-              </button>
-            </div>
-
-            <p className="mt-6 text-center text-sm text-gray-500">
+            <p className="text-center text-sm text-gray-500">
               Don&apos;t have an account?{' '}
               <Link
-                href="/auth/signup"
+                href={redirectTo !== '/account' ? `/auth/signup?redirect=${encodeURIComponent(redirectTo)}` : '/auth/signup'}
                 className="font-semibold text-primary hover:text-primary-dark"
               >
                 Create one now

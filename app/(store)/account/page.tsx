@@ -7,21 +7,27 @@ import OrderHistory from './OrderHistory';
 import AddressBook from './AddressBook';
 import { supabase } from '@/lib/supabase';
 
+const TAB_IDS = ['profile', 'orders', 'addresses', 'security'];
+
+function splitName(full: string): { first: string; last: string } {
+  const parts = full.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { first: '', last: '' };
+  return { first: parts[0], last: parts.slice(1).join(' ') };
+}
+
 function AccountContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialTab = searchParams?.get('tab') || 'profile';
 
-  const [activeTab, setActiveTab] = useState(initialTab);
+  const [activeTab, setActiveTab] = useState(TAB_IDS.includes(initialTab) ? initialTab : 'profile');
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   // Update active tab when URL param changes
   useEffect(() => {
     const tab = searchParams?.get('tab');
-    if (tab && ['profile', 'orders', 'addresses', 'security'].includes(tab)) {
-      setActiveTab(tab);
-    }
+    setActiveTab(tab && TAB_IDS.includes(tab) ? tab : 'profile');
   }, [searchParams]);
 
   // Profile Form States
@@ -36,6 +42,7 @@ function AccountContent() {
 
   // Password Form States
   const [passwordData, setPasswordData] = useState({
+    currentPassword: '',
     password: '',
     confirmPassword: ''
   });
@@ -51,11 +58,18 @@ function AccountContent() {
       }
 
       setUser(session.user);
+      const meta = session.user.user_metadata || {};
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('full_name, phone')
+        .eq('id', session.user.id)
+        .maybeSingle();
+      const fromProfile = splitName(profile?.full_name || '');
       setProfileData({
-        firstName: session.user.user_metadata?.first_name || '',
-        lastName: session.user.user_metadata?.last_name || '',
+        firstName: fromProfile.first || meta.first_name || '',
+        lastName: fromProfile.first ? fromProfile.last : (meta.last_name || ''),
         email: session.user.email || '',
-        phone: session.user.phone || ''
+        phone: profile?.phone || meta.phone || session.user.phone || ''
       });
       setLoading(false);
     }
@@ -67,19 +81,48 @@ function AccountContent() {
     setProfileLoading(true);
     setProfileMessage({ type: '', text: '' });
 
+    const phone = profileData.phone.trim();
+    const phoneDigits = phone.replace(/\D/g, '');
+    if (phone && !(/^0\d{9}$/.test(phoneDigits) || /^233\d{9}$/.test(phoneDigits))) {
+      setProfileMessage({ type: 'error', text: 'Enter a Ghana phone number, for example 024 220 5331.' });
+      setProfileLoading(false);
+      return;
+    }
+    const fullName = `${profileData.firstName.trim()} ${profileData.lastName.trim()}`.trim();
+
     try {
-      const { error } = await supabase.auth.updateUser({
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .update({ full_name: fullName || null, phone: phone || null, updated_at: new Date().toISOString() })
+        .eq('id', user.id);
+      if (profileError) throw profileError;
+
+      // Read back what was stored so the form shows the saved values.
+      const { data: saved, error: readError } = await supabase
+        .from('profiles')
+        .select('full_name, phone')
+        .eq('id', user.id)
+        .maybeSingle();
+      if (readError || !saved) throw readError || new Error('not saved');
+      const savedName = splitName(saved.full_name || '');
+      setProfileData((prev) => ({
+        ...prev,
+        firstName: savedName.first,
+        lastName: savedName.last,
+        phone: saved.phone || '',
+      }));
+
+      // Keep the sign-in metadata in step (used by the header greeting and checkout prefill).
+      await supabase.auth.updateUser({
         data: {
-          first_name: profileData.firstName,
-          last_name: profileData.lastName,
-          phone: profileData.phone // Storing phone in metadata for now
+          first_name: savedName.first,
+          last_name: savedName.last,
+          phone: saved.phone || '',
         }
       });
-
-      if (error) throw error;
-      setProfileMessage({ type: 'success', text: 'Profile updated successfully!' });
-    } catch (err: any) {
-      setProfileMessage({ type: 'error', text: err.message });
+      setProfileMessage({ type: 'success', text: 'Your details were saved.' });
+    } catch {
+      setProfileMessage({ type: 'error', text: 'Your details could not be saved. Please try again.' });
     } finally {
       setProfileLoading(false);
     }
@@ -87,27 +130,62 @@ function AccountContent() {
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (passwordData.password !== passwordData.confirmPassword) {
-      setPasswordMessage({ type: 'error', text: 'Passwords do not match' });
+    setPasswordMessage({ type: '', text: '' });
+    if (!passwordData.currentPassword) {
+      setPasswordMessage({ type: 'error', text: 'Enter your current password.' });
       return;
     }
-    if (passwordData.password.length < 6) {
-      setPasswordMessage({ type: 'error', text: 'Password must be at least 6 characters' });
+    if (passwordData.password.length < 8) {
+      setPasswordMessage({ type: 'error', text: 'Your new password must be at least 8 characters.' });
+      return;
+    }
+    if (passwordData.password !== passwordData.confirmPassword) {
+      setPasswordMessage({ type: 'error', text: 'The new passwords do not match.' });
+      return;
+    }
+    if (passwordData.password === passwordData.currentPassword) {
+      setPasswordMessage({ type: 'error', text: 'Choose a new password that is different from the current one.' });
       return;
     }
 
     setPasswordLoading(true);
-    setPasswordMessage({ type: '', text: '' });
-
     try {
-      const { error } = await supabase.auth.updateUser({
-        password: passwordData.password
+      // The server only accepts a password change shortly after a sign-in,
+      // so confirm the current password first.
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: passwordData.currentPassword,
       });
-      if (error) throw error;
-      setPasswordMessage({ type: 'success', text: 'Password updated successfully!' });
-      setPasswordData({ password: '', confirmPassword: '' });
-    } catch (err: any) {
-      setPasswordMessage({ type: 'error', text: err.message });
+      if (signInError) {
+        const status = (signInError as any).status;
+        setPasswordMessage({
+          type: 'error',
+          text: status === 429
+            ? (signInError.message || 'Too many attempts. Please wait and try again.')
+            : 'Your current password is not correct.',
+        });
+        return;
+      }
+
+      const { error } = await supabase.auth.updateUser({ password: passwordData.password });
+      if (error) {
+        const code = (error as any).code;
+        const status = (error as any).status;
+        if (code === 'reauthentication_needed' || status === 401) {
+          setPasswordMessage({ type: 'error', text: 'Please sign in again to change your password.' });
+        } else {
+          setPasswordMessage({ type: 'error', text: error.message || 'The request could not be completed.' });
+        }
+        return;
+      }
+
+      // The server signs out every session after a password change.
+      setPasswordData({ currentPassword: '', password: '', confirmPassword: '' });
+      await supabase.auth.signOut({ scope: 'local' });
+      router.push('/auth/login?changed=1');
+      router.refresh();
+    } catch {
+      setPasswordMessage({ type: 'error', text: 'The request could not be completed.' });
     } finally {
       setPasswordLoading(false);
     }
@@ -127,36 +205,37 @@ function AccountContent() {
     );
   }
 
-  const quickActions = [
-    {
-      icon: 'ri-medal-line',
-      title: 'Loyalty Program',
-      description: 'Earn points and rewards',
-      link: '/loyalty'
-    },
-    {
-      icon: 'ri-user-add-line',
-      title: 'Refer & Earn',
-      description: 'Invite friends and earn rewards',
-      link: '/referral'
-    }
-  ];
+  const goToChangePassword = () => {
+    setActiveTab('profile');
+    router.replace('/account?tab=profile#change-password');
+    setTimeout(() => document.getElementById('change-password')?.scrollIntoView({ behavior: 'smooth' }), 50);
+  };
 
-  const securityOptions = [
+  const securityOptions: { icon: string; title: string; description: string; status: string; href: string | null; onClick: null | (() => void) }[] = [
     {
       icon: 'ri-mail-check-line',
-      title: 'Verify Email',
-      description: user?.email,
+      title: 'Email',
+      description: user?.email || '',
       status: user?.email_confirmed_at ? 'verified' : 'unverified',
-      link: '#' // /account/verify-email
+      href: null,
+      onClick: null,
     },
     {
-      icon: 'ri-phone-line',
-      title: 'Verify Phone',
-      description: user?.phone || 'No phone added',
-      status: user?.phone_confirmed_at ? 'verified' : 'unverified',
-      link: '#' // /account/verify-phone
-    }
+      icon: 'ri-lock-password-line',
+      title: 'Change password',
+      description: 'Confirm your current password, then choose a new one',
+      status: '',
+      href: null,
+      onClick: goToChangePassword,
+    },
+    {
+      icon: 'ri-shield-user-line',
+      title: 'Privacy & data',
+      description: 'Download your data or ask us to delete your account',
+      status: '',
+      href: '/account/privacy',
+      onClick: null,
+    },
   ];
 
   return (
@@ -252,8 +331,10 @@ function AccountContent() {
 
                     <form onSubmit={handleUpdateProfile} className="space-y-5">
                       <div>
-                        <label className="block text-sm font-medium text-gray-900 mb-1.5">First Name</label>
+                        <label htmlFor="first-name" className="block text-sm font-medium text-gray-900 mb-1.5">First Name</label>
                         <input
+                          id="first-name"
+                          autoComplete="given-name"
                           type="text"
                           value={profileData.firstName}
                           onChange={e => setProfileData({ ...profileData, firstName: e.target.value })}
@@ -263,8 +344,10 @@ function AccountContent() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-900 mb-1.5">Last Name</label>
+                        <label htmlFor="last-name" className="block text-sm font-medium text-gray-900 mb-1.5">Last Name</label>
                         <input
+                          id="last-name"
+                          autoComplete="family-name"
                           type="text"
                           value={profileData.lastName}
                           onChange={e => setProfileData({ ...profileData, lastName: e.target.value })}
@@ -274,10 +357,11 @@ function AccountContent() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-900 mb-1.5">Email Address</label>
+                        <label htmlFor="email-address" className="block text-sm font-medium text-gray-900 mb-1.5">Email Address</label>
                         <div className="relative">
                           <i className="ri-mail-line absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
                           <input
+                            id="email-address"
                             type="email"
                             value={profileData.email}
                             disabled
@@ -287,14 +371,16 @@ function AccountContent() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-900 mb-1.5">Phone Number</label>
+                        <label htmlFor="phone-number" className="block text-sm font-medium text-gray-900 mb-1.5">Phone Number</label>
                         <div className="relative">
                           <i className="ri-phone-line absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
                           <input
+                            id="phone-number"
                             type="tel"
+                            autoComplete="tel"
                             value={profileData.phone}
                             onChange={e => setProfileData({ ...profileData, phone: e.target.value })}
-                            placeholder="e.g. 0555 600 371"
+                            placeholder="e.g. 024 220 5331"
                             className="w-full h-11 pl-10 pr-3.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all bg-white placeholder:text-gray-300"
                           />
                         </div>
@@ -309,9 +395,9 @@ function AccountContent() {
                       </button>
                     </form>
 
-                    <div className="mt-10 pt-8 border-t border-gray-100">
+                    <div id="change-password" className="mt-10 pt-8 border-t border-gray-100 scroll-mt-24">
                       <h2 className="text-lg font-bold text-gray-900">Change Password</h2>
-                      <p className="text-gray-400 text-xs mt-0.5 mb-5">Use a strong, unique password for your account.</p>
+                      <p className="text-gray-400 text-xs mt-0.5 mb-5">Enter your current password, then choose a new one. You will be signed out on all devices and asked to sign in again.</p>
 
                       {passwordMessage.text && (
                         <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 text-sm ${passwordMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
@@ -322,25 +408,44 @@ function AccountContent() {
 
                       <form onSubmit={handleChangePassword} className="space-y-5">
                         <div>
-                          <label className="block text-sm font-medium text-gray-900 mb-1.5">New Password</label>
+                          <label htmlFor="current-password" className="block text-sm font-medium text-gray-900 mb-1.5">Current Password</label>
                           <div className="relative">
-                            <i className="ri-lock-line absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                            <i className="ri-key-2-line absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm" aria-hidden="true"></i>
                             <input
+                              id="current-password"
                               type="password"
-                              value={passwordData.password}
-                              onChange={e => setPasswordData({ ...passwordData, password: e.target.value })}
-                              placeholder="Min. 6 characters"
+                              autoComplete="current-password"
+                              value={passwordData.currentPassword}
+                              onChange={e => setPasswordData({ ...passwordData, currentPassword: e.target.value })}
                               className="w-full h-11 pl-10 pr-3.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all bg-white placeholder:text-gray-300"
                             />
                           </div>
                         </div>
 
                         <div>
-                          <label className="block text-sm font-medium text-gray-900 mb-1.5">Confirm Password</label>
+                          <label htmlFor="new-password" className="block text-sm font-medium text-gray-900 mb-1.5">New Password</label>
+                          <div className="relative">
+                            <i className="ri-lock-line absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                            <input
+                              id="new-password"
+                              type="password"
+                              autoComplete="new-password"
+                              value={passwordData.password}
+                              onChange={e => setPasswordData({ ...passwordData, password: e.target.value })}
+                              placeholder="At least 8 characters"
+                              className="w-full h-11 pl-10 pr-3.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all bg-white placeholder:text-gray-300"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label htmlFor="confirm-password" className="block text-sm font-medium text-gray-900 mb-1.5">Confirm New Password</label>
                           <div className="relative">
                             <i className="ri-lock-check-line absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
                             <input
+                              id="confirm-password"
                               type="password"
+                              autoComplete="new-password"
                               value={passwordData.confirmPassword}
                               onChange={e => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
                               placeholder="Re-enter your password"
@@ -369,36 +474,56 @@ function AccountContent() {
                   <div>
                     <h2 className="text-2xl font-bold text-gray-900 mb-6">Security Settings</h2>
                     <div className="grid md:grid-cols-2 gap-4">
-                      {securityOptions.map((option, index) => (
-                        <Link
-                          key={index}
-                          href={option.link}
-                          className="flex items-center justify-between p-5 border border-gray-200 rounded-2xl hover:border-gray-600 hover:shadow-md transition-all group bg-white"
-                        >
-                          <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-gray-50 rounded-full flex items-center justify-center group-hover:bg-gray-100 group-hover:text-gray-900 transition-colors">
-                              <i className={`${option.icon} text-xl`}></i>
+                      {securityOptions.map((option) => {
+                        const inner = (
+                          <>
+                            <div className="flex items-center gap-4 min-w-0">
+                              <div className="w-12 h-12 flex-shrink-0 bg-gray-50 rounded-full flex items-center justify-center group-hover:bg-gray-100 group-hover:text-gray-900 transition-colors">
+                                <i className={`${option.icon} text-xl`} aria-hidden="true"></i>
+                              </div>
+                              <div className="min-w-0">
+                                <h3 className="font-bold text-gray-900">{option.title}</h3>
+                                <p className="text-sm text-gray-500 break-words">{option.description}</p>
+                              </div>
                             </div>
-                            <div>
-                              <h3 className="font-bold text-gray-900">{option.title}</h3>
-                              <p className="text-sm text-gray-500">{option.description}</p>
+                            <div className="flex items-center gap-3 flex-shrink-0">
+                              {option.status === 'verified' && (
+                                <span className="text-xs font-bold px-3 py-1 bg-gray-100 text-gray-900 rounded-full flex items-center gap-1">
+                                  <i className="ri-verified-badge-fill" aria-hidden="true"></i> Verified
+                                </span>
+                              )}
+                              {option.status === 'unverified' && (
+                                <span className="text-xs font-bold px-3 py-1 bg-amber-100 text-amber-700 rounded-full flex items-center gap-1">
+                                  <i className="ri-error-warning-fill" aria-hidden="true"></i> Not confirmed
+                                </span>
+                              )}
+                              {(option.href || option.onClick) && (
+                                <i className="ri-arrow-right-line text-gray-300 group-hover:text-gray-600 transition-colors" aria-hidden="true"></i>
+                              )}
                             </div>
+                          </>
+                        );
+                        const cls = 'flex items-center justify-between gap-3 p-5 border border-gray-200 rounded-2xl transition-all group bg-white text-left w-full';
+                        if (option.href) {
+                          return (
+                            <Link key={option.title} href={option.href} className={`${cls} hover:border-gray-600 hover:shadow-md`}>
+                              {inner}
+                            </Link>
+                          );
+                        }
+                        if (option.onClick) {
+                          return (
+                            <button key={option.title} type="button" onClick={option.onClick} className={`${cls} hover:border-gray-600 hover:shadow-md`}>
+                              {inner}
+                            </button>
+                          );
+                        }
+                        return (
+                          <div key={option.title} className={cls}>
+                            {inner}
                           </div>
-                          <div className="flex items-center gap-3">
-                            {option.status === 'verified' && (
-                              <span className="text-xs font-bold px-3 py-1 bg-gray-100 text-gray-900 rounded-full flex items-center gap-1">
-                                <i className="ri-verified-badge-fill"></i> Verified
-                              </span>
-                            )}
-                            {option.status === 'unverified' && (
-                              <span className="text-xs font-bold px-3 py-1 bg-amber-100 text-amber-700 rounded-full flex items-center gap-1">
-                                <i className="ri-error-warning-fill"></i> Verify
-                              </span>
-                            )}
-                            <i className="ri-arrow-right-line text-gray-300 group-hover:text-gray-600 transition-colors"></i>
-                          </div>
-                        </Link>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

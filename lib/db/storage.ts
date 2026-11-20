@@ -21,11 +21,99 @@ function publicBase(): string {
 }
 
 function signingSecret(): string {
-  return (
+  // Same order as before, so signed URLs already handed out keep working.
+  const secret =
     process.env.STORAGE_SIGNING_SECRET ||
     process.env.JWT_SECRET ||
-    "storage-dev-secret"
-  );
+    process.env.AUTH_JWT_SECRET;
+  if (secret) return secret;
+  // A public default would let anyone sign a URL for a private object.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("STORAGE_SIGNING_SECRET (or JWT_SECRET) must be set in production");
+  }
+  return "storage-dev-secret";
+}
+
+/**
+ * Buckets whose objects anyone may read through /storage/v1/object/public and
+ * the image render route (all created public in the schema:
+ * supabase/migrations/20260209000000_complete_schema.sql). Any other bucket
+ * is private: signed URLs only.
+ */
+export const PUBLIC_BUCKETS = new Set(["products", "avatars", "blog", "media", "reviews", "site-assets"]);
+
+const BUCKET_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
+const IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+  // Favicons and logos (admin settings uploads). SVG is served with a
+  // sandbox CSP below, so script inside one never runs on this origin.
+  "image/svg+xml",
+  "image/x-icon",
+  "image/vnd.microsoft.icon",
+]);
+const VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/ogg", "video/quicktime", "video/x-msvideo"]);
+const DOCUMENT_TYPES = new Set(["application/pdf"]);
+
+/** Upload size caps. Product videos run to ~40 MB. */
+export const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+export const MAX_VIDEO_BYTES = 60 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024;
+
+function baseType(contentType: string | null | undefined): string {
+  return String(contentType || "").split(";")[0].trim().toLowerCase();
+}
+
+/** The largest upload accepted for a content type, or null when the type is not allowed at all. */
+export function uploadLimitFor(contentType: string | null | undefined): number | null {
+  const type = baseType(contentType);
+  if (IMAGE_TYPES.has(type)) return MAX_IMAGE_BYTES;
+  if (VIDEO_TYPES.has(type)) return MAX_VIDEO_BYTES;
+  if (DOCUMENT_TYPES.has(type)) return MAX_DOCUMENT_BYTES;
+  return null;
+}
+
+/**
+ * The type to record for an upload: the uploader's type when it is an
+ * allowed image/video/PDF type, else the type its file extension implies
+ * (supabase-js sends Blobs without a type as application/octet-stream).
+ * Null when neither is allowed.
+ */
+export function acceptedUploadType(objectPath: string, contentType: string | null | undefined): string | null {
+  const given = baseType(contentType);
+  if (uploadLimitFor(given) !== null) return given;
+  const guessed = guessContentType(objectPath);
+  return uploadLimitFor(guessed) !== null ? guessed : null;
+}
+
+/**
+ * Response headers for serving a stored object. Only allowed image/video/PDF
+ * types are served inline; anything else is forced to download, so an
+ * uploaded HTML file can never run script on the store's origin. Every object
+ * gets nosniff and a sandbox CSP (covers SVG opened directly).
+ */
+export function objectResponseHeaders(contentType: string): Record<string, string> {
+  const type = baseType(contentType);
+  const headers: Record<string, string> = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+  };
+  if (DOCUMENT_TYPES.has(type)) {
+    // Browsers' PDF viewers refuse to open under a sandbox CSP; PDF script
+    // runs in the viewer, not on this origin.
+    delete headers["Content-Security-Policy"];
+    headers["Content-Type"] = type;
+  } else if (uploadLimitFor(type) !== null) {
+    headers["Content-Type"] = type;
+  } else {
+    headers["Content-Type"] = "application/octet-stream";
+    headers["Content-Disposition"] = "attachment";
+  }
+  return headers;
 }
 
 export function signObjectToken(bucket: string, objectPath: string, expEpoch: number): string {
@@ -50,10 +138,14 @@ export function verifyObjectToken(
 }
 
 function safeJoin(bucket: string, objectPath: string): string {
+  if (!BUCKET_RE.test(bucket)) throw new Error("Invalid bucket name");
   const clean = objectPath.replace(/^\/+/, "");
-  const full = path.normalize(path.join(STORAGE_ROOT, bucket, clean));
-  const base = path.normalize(path.join(STORAGE_ROOT, bucket));
-  if (!full.startsWith(base)) throw new Error("Path traversal blocked");
+  // The .meta.json sidecar holds the stored type; it is never an object itself.
+  if (!clean || clean.endsWith(".meta.json")) throw new Error("Invalid object path");
+  const base = path.resolve(STORAGE_ROOT, bucket);
+  const full = path.resolve(base, clean);
+  // Compare with a trailing separator: "products-private" must not pass as "products".
+  if (!full.startsWith(base + path.sep)) throw new Error("Path traversal blocked");
   return full;
 }
 
@@ -68,10 +160,11 @@ export function renderCacheFilePath(
   objectPath: string,
   variant: string
 ): string {
+  if (!BUCKET_RE.test(bucket)) throw new Error("Invalid bucket name");
   const clean = objectPath.replace(/^\/+/, "");
-  const base = path.normalize(path.join(STORAGE_ROOT, ".render-cache", bucket));
-  const full = path.normalize(path.join(base, `${clean}.${variant}`));
-  if (!full.startsWith(base)) throw new Error("Path traversal blocked");
+  const base = path.resolve(STORAGE_ROOT, ".render-cache", bucket);
+  const full = path.resolve(base, `${clean}.${variant}`);
+  if (!full.startsWith(base + path.sep)) throw new Error("Path traversal blocked");
   return full;
 }
 
@@ -89,6 +182,8 @@ export async function readObject(
     } catch {
       contentType = guessContentType(objectPath);
     }
+    // Older uploads stored without a real type: fall back to the extension.
+    if (baseType(contentType) === "application/octet-stream") contentType = guessContentType(objectPath);
     return { bytes, contentType };
   } catch {
     return null;
@@ -103,6 +198,16 @@ function guessContentType(p: string): string {
     png: "image/png",
     webp: "image/webp",
     gif: "image/gif",
+    avif: "image/avif",
+    svg: "image/svg+xml",
+    ico: "image/x-icon",
+    mp4: "video/mp4",
+    m4v: "video/mp4",
+    webm: "video/webm",
+    ogv: "video/ogg",
+    ogg: "video/ogg",
+    mov: "video/quicktime",
+    avi: "video/x-msvideo",
     pdf: "application/pdf",
   };
   return map[ext] || "application/octet-stream";

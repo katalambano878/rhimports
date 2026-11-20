@@ -85,7 +85,7 @@ export default function ProductCard({
   const { addToCart } = useCart();
   const { getSetting } = useCMS();
   const { addToWishlist, removeFromWishlist, isInWishlist } = useWishlist();
-  const currencySymbol = getSetting('currency_symbol') || '$';
+  const currencySymbol = getSetting('currency_symbol') || 'GH₵';
 
   const [activeColor, setActiveColor] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState(false);
@@ -95,7 +95,7 @@ export default function ProductCard({
   const discountPct = hasDiscount ? Math.round((1 - displayPrice / (originalPrice || 1)) * 100) : 0;
   const savings = hasDiscount ? (originalPrice! - displayPrice) : 0;
   const inWishlist = isInWishlist(id);
-  const lowStock = inStock && maxStock > 0 && maxStock <= 5;
+  const lowStock = inStock && !isPreorder && maxStock > 0 && maxStock <= 5;
   const MAX_SWATCHES = 5;
 
   const formatPrice = (val: number) => formatCurrency(val, currencySymbol);
@@ -103,7 +103,7 @@ export default function ProductCard({
   const handleAddToCart = (e: React.MouseEvent) => {
     e.preventDefault();
     if (!inStock) return;
-    addToCart({ id, name, price: displayPrice, image, quantity: moq, slug, maxStock, moq });
+    addToCart({ id, name, price: displayPrice, image, quantity: moq, slug, maxStock, moq, preorder: isPreorder });
     setJustAdded(true);
     setTimeout(() => setJustAdded(false), 1400);
   };
@@ -125,6 +125,7 @@ export default function ProductCard({
         badge,
         inStock,
         slug,
+        hasVariants,
       });
     }
   };
@@ -176,7 +177,7 @@ export default function ProductCard({
         <button
           type="button"
           onClick={handleWishlist}
-          aria-label={inWishlist ? 'Remove from wishlist' : 'Add to wishlist'}
+          aria-label={inWishlist ? `Remove ${name} from wishlist` : `Add ${name} to wishlist`}
           aria-pressed={inWishlist}
           className={`rounded-full backdrop-blur-md flex items-center justify-center transition-all duration-300 shadow-sm hover:scale-110 active:scale-95 ${
             compact
@@ -313,6 +314,7 @@ export default function ProductCard({
           >
             <i className={`ri-settings-3-line transition-transform group-hover/btn:rotate-90 ${compact ? 'text-sm sm:text-base' : 'text-base'}`} />
             <span className={compact ? 'truncate' : ''}>Select Options</span>
+            <span className="sr-only">for {name}</span>
           </Link>
         ) : (
           <button
@@ -334,6 +336,7 @@ export default function ProductCard({
               <>
                 <i className={`ri-shopping-bag-line transition-transform group-hover/btn:-translate-y-0.5 ${compact ? 'text-sm sm:text-base' : 'text-base'}`} />
                 <span>Add to cart</span>
+                <span className="sr-only">: {name}</span>
                 <i className={`ri-arrow-right-line opacity-0 -ml-2 transition-all duration-300 group-hover/btn:opacity-100 group-hover/btn:ml-0 ${compact ? 'hidden sm:inline text-base' : 'text-base'}`} />
               </>
             )}

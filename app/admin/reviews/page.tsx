@@ -4,7 +4,10 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export default function AdminReviewsPage() {
-  const [statusFilter, setStatusFilter] = useState('all');
+  // New reviews arrive as pending, so open on the queue that needs action.
+  const [statusFilter, setStatusFilter] = useState('pending');
+  const [loadError, setLoadError] = useState('');
+  const [sortBy, setSortBy] = useState('date');
   const [selectedReviews, setSelectedReviews] = useState<string[]>([]);
   const [reviews, setReviews] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -17,42 +20,65 @@ export default function AdminReviewsPage() {
   const fetchReviews = async () => {
     try {
       setLoading(true);
+      // The data layer only embeds relationships it knows about; reviews -> profiles
+      // is not one of them, so customers and products are fetched separately by id.
       const { data, error } = await supabase
         .from('reviews')
-        .select(`
-          *,
-          profiles:user_id (full_name, email),
-          products:product_id (name, product_images (url))
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
       if (error) {
-        // Graceful fallback if table doesn't exist or permissions fail
-        console.warn('Error fetching reviews:', error);
-        // setReviews([]); // Keep empty
-      } else if (data) {
-        const formatted = data.map((r: any) => ({
+        setLoadError(`Could not load reviews: ${error.message}`);
+        return;
+      }
+      const rows = data || [];
+      const userIds = Array.from(new Set(rows.map((r: any) => r.user_id).filter(Boolean)));
+      const productIds = Array.from(new Set(rows.map((r: any) => r.product_id).filter(Boolean)));
+
+      const [profilesRes, productsRes] = await Promise.all([
+        userIds.length
+          ? supabase.from('profiles').select('id, full_name, email').in('id', userIds)
+          : Promise.resolve({ data: [], error: null } as any),
+        productIds.length
+          ? supabase.from('products').select('id, name, product_images (url, position)').in('id', productIds)
+          : Promise.resolve({ data: [], error: null } as any),
+      ]);
+      const problems = [profilesRes.error && 'customer names', productsRes.error && 'product names'].filter(Boolean);
+      setLoadError(problems.length ? `Reviews loaded, but ${problems.join(' and ')} could not be loaded.` : '');
+
+      const profileById = new Map<string, any>((profilesRes.data || []).map((p: any) => [p.id, p]));
+      const productById = new Map<string, any>((productsRes.data || []).map((p: any) => [p.id, p]));
+
+      const formatted = rows.map((r: any) => {
+        const profile = profileById.get(r.user_id);
+        const product = productById.get(r.product_id);
+        const images = [...(product?.product_images || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+        const status = (r.status || 'pending') as string;
+        return {
           id: r.id,
           customer: {
-            name: r.profiles?.full_name || 'Anonymous',
-            email: r.profiles?.email || 'N/A',
-            avatar: getInitials(r.profiles?.full_name || r.profiles?.email)
+            name: profile?.full_name || 'Anonymous',
+            email: profile?.email || '',
+            avatar: getInitials(profile?.full_name || profile?.email)
           },
           product: {
-            name: r.products?.name || 'Unknown Product',
-            image: r.products?.product_images?.[0]?.url || 'https://via.placeholder.com/150'
+            name: product?.name || 'Unknown product',
+            image: images[0]?.url || ''
           },
           rating: r.rating,
           title: r.title,
           comment: r.content,
           date: new Date(r.created_at).toLocaleDateString(),
-          status: r.status || 'Pending',
-          helpful: r.helpful || 0
-        }));
-        setReviews(formatted);
-      }
-    } catch (error) {
-      console.error('Error fetching reviews:', error);
+          createdAt: r.created_at,
+          // Stored lowercase (review_status enum); shown capitalised.
+          status: status.charAt(0).toUpperCase() + status.slice(1),
+          helpful: r.helpful_votes || 0,
+          verified: !!r.verified_purchase,
+        };
+      });
+      setReviews(formatted);
+    } catch (error: any) {
+      setLoadError(`Could not load reviews: ${error?.message || 'unknown error'}`);
     } finally {
       setLoading(false);
     }
@@ -71,7 +97,13 @@ export default function AdminReviewsPage() {
 
   const filteredReviews = reviews.filter(r =>
     statusFilter === 'all' || r.status.toLowerCase() === statusFilter
-  );
+  ).sort((a, b) => {
+    switch (sortBy) {
+      case 'rating': return (b.rating || 0) - (a.rating || 0);
+      case 'helpful': return (b.helpful || 0) - (a.helpful || 0);
+      default: return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+    }
+  });
 
   const stats = {
     total: reviews.length,
@@ -106,8 +138,9 @@ export default function AdminReviewsPage() {
     if (selectedReviews.length === 0) return;
     try {
       let newStatus = '';
-      if (action === 'Approve') newStatus = 'Approved';
-      if (action === 'Reject') newStatus = 'Rejected';
+      // review_status enum values are lowercase.
+      if (action === 'Approve') newStatus = 'approved';
+      if (action === 'Reject') newStatus = 'rejected';
 
       if (newStatus) {
         const { error } = await supabase
@@ -119,9 +152,8 @@ export default function AdminReviewsPage() {
         fetchReviews();
         setSelectedReviews([]);
       }
-    } catch (err) {
-      console.error('Error updating reviews', err);
-      alert('Failed to update reviews. Functionality might be limited.');
+    } catch (err: any) {
+      alert('Reviews not updated: ' + (err?.message || 'unknown error'));
     }
   };
 
@@ -143,13 +175,23 @@ export default function AdminReviewsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Reviews</h1>
-          <p className="text-gray-600 mt-1">Moderate and manage customer reviews</p>
+          <p className="text-gray-600 mt-1">
+            New customer reviews stay hidden until approved.
+            {!loading && ` ${stats.pending} waiting for approval.`}
+          </p>
         </div>
       </div>
 
+      {loadError && (
+        <div className="flex items-start gap-2 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg" role="alert">
+          <i className="ri-error-warning-line text-red-600 mt-0.5"></i>
+          <span>{loadError}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <button
-          onClick={() => setStatusFilter('all')}
+          onClick={() => { setStatusFilter('all'); setSelectedReviews([]); }}
           className={`p-4 rounded-xl border-2 transition-all text-left ${statusFilter === 'all' ? 'border-gray-900 bg-gray-50' : 'border-gray-200 bg-white'
             }`}
         >
@@ -157,15 +199,15 @@ export default function AdminReviewsPage() {
           <p className="text-sm text-gray-600 mt-1">Total Reviews</p>
         </button>
         <button
-          onClick={() => setStatusFilter('pending')}
+          onClick={() => { setStatusFilter('pending'); setSelectedReviews([]); }}
           className={`p-4 rounded-xl border-2 transition-all text-left ${statusFilter === 'pending' ? 'border-amber-700 bg-amber-50' : 'border-gray-200 bg-white'
             }`}
         >
           <p className="text-2xl font-bold text-amber-700">{stats.pending}</p>
-          <p className="text-sm text-gray-600 mt-1">Pending Review</p>
+          <p className="text-sm text-gray-600 mt-1">Waiting for approval</p>
         </button>
         <button
-          onClick={() => setStatusFilter('approved')}
+          onClick={() => { setStatusFilter('approved'); setSelectedReviews([]); }}
           className={`p-4 rounded-xl border-2 transition-all text-left ${statusFilter === 'approved' ? 'border-gray-900 bg-gray-50' : 'border-gray-200 bg-white'
             }`}
         >
@@ -173,7 +215,7 @@ export default function AdminReviewsPage() {
           <p className="text-sm text-gray-600 mt-1">Approved</p>
         </button>
         <button
-          onClick={() => setStatusFilter('rejected')}
+          onClick={() => { setStatusFilter('rejected'); setSelectedReviews([]); }}
           className={`p-4 rounded-xl border-2 transition-all text-left ${statusFilter === 'rejected' ? 'border-red-700 bg-red-50' : 'border-gray-200 bg-white'
             }`}
         >
@@ -188,10 +230,15 @@ export default function AdminReviewsPage() {
             <h2 className="text-lg font-bold text-gray-900 text-transform capitalize">
               {statusFilter === 'all' ? 'All Reviews' : `${statusFilter} Reviews`}
             </h2>
-            <select className="px-4 py-2 pr-8 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 font-medium cursor-pointer">
-              <option>Sort by Date</option>
-              <option>Sort by Rating</option>
-              <option>Sort by Helpful</option>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              aria-label="Sort reviews"
+              className="px-4 py-2 pr-8 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 font-medium cursor-pointer"
+            >
+              <option value="date">Sort by Date</option>
+              <option value="rating">Sort by Rating</option>
+              <option value="helpful">Sort by Helpful</option>
             </select>
           </div>
         </div>
@@ -257,11 +304,17 @@ export default function AdminReviewsPage() {
                     </td>
                     <td className="py-4 px-4">
                       <div className="flex items-center space-x-3">
-                        <img
-                          src={review.product.image}
-                          alt={review.product.name}
-                          className="w-12 h-12 rounded-lg object-cover border border-gray-100"
-                        />
+                        {review.product.image ? (
+                          <img
+                            src={review.product.image}
+                            alt={review.product.name}
+                            className="w-12 h-12 rounded-lg object-cover border border-gray-100"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-lg bg-gray-100 border border-gray-100 flex items-center justify-center text-gray-400">
+                            <i className="ri-image-line"></i>
+                          </div>
+                        )}
                         <span className="text-sm font-medium text-gray-900 line-clamp-2">{review.product.name}</span>
                       </div>
                     </td>
@@ -281,6 +334,7 @@ export default function AdminReviewsPage() {
                         {renderStars(review.rating)}
                         <p className="text-sm font-bold text-gray-900">{review.title}</p>
                         <p className="text-sm text-gray-600 line-clamp-2">{review.comment}</p>
+                        {review.verified && <p className="text-xs text-gray-500"><i className="ri-shield-check-line mr-1"></i>Verified purchase</p>}
                       </div>
                     </td>
                     <td className="py-4 px-4 text-sm text-gray-600 whitespace-nowrap">{review.date}</td>

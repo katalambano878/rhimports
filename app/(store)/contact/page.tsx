@@ -2,7 +2,6 @@
 
 import { useState, type FormEvent } from 'react';
 import { useCMS } from '@/context/CMSContext';
-import { supabase } from '@/lib/supabase';
 import { usePageTitle } from '@/hooks/usePageTitle';
 import { useRecaptcha } from '@/hooks/useRecaptcha';
 import AnimatedSection from '@/components/AnimatedSection';
@@ -27,6 +26,7 @@ export default function ContactPage() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('idle' as 'idle' | 'success' | 'error');
+  const [errorText, setErrorText] = useState('');
   const { getToken, verifying } = useRecaptcha();
 
   const handleSubmit = async (e: FormEvent) => {
@@ -34,43 +34,39 @@ export default function ContactPage() {
     setIsSubmitting(true);
     setSubmitStatus('idle');
 
+    setErrorText('');
+
     // reCAPTCHA verification
     const isHuman = await getToken('contact');
     if (!isHuman) {
+      setErrorText('Security check failed. Please try again.');
       setSubmitStatus('error');
       setIsSubmitting(false);
       return;
     }
 
     try {
-      // Store in Supabase
-      const { error } = await supabase
-        .from('contact_submissions')
-        .insert({
-          name: formData.name,
-          email: formData.email,
-          phone: formData.phone,
-          subject: formData.subject,
-          message: formData.message,
-        });
-
-      if (error) {
-        console.log('Note: contact_submissions table may not exist');
-      }
-
-      // Send Contact Notification
-      fetch('/api/notifications', {
+      const res = await fetch('/api/storefront/contact', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'contact',
-          payload: formData
-        })
-      }).catch(err => console.error('Contact notification error:', err));
-
+          name: formData.name.trim(),
+          email: formData.email.trim(),
+          phone: formData.phone.trim() || undefined,
+          subject: formData.subject.trim() || undefined,
+          message: formData.message.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErrorText(typeof data?.error === 'string' ? data.error : '');
+        setSubmitStatus('error');
+        return;
+      }
       setSubmitStatus('success');
       setFormData({ name: '', email: '', phone: '', subject: '', message: '' });
-    } catch (error) {
+    } catch {
+      setErrorText('');
       setSubmitStatus('error');
     } finally {
       setIsSubmitting(false);
@@ -78,7 +74,7 @@ export default function ContactPage() {
   };
 
   // CMS-driven config (fallbacks = store details)
-  const contactEmail = getSetting('contact_email') || '';
+  const contactEmail = getSetting('contact_email') || 'info@rnhimports.com';
   const contactPhone = getSetting('contact_phone') || DEFAULT_CONTACT_PHONE;
   const contactAddress = getSetting('contact_address') || DEFAULT_CONTACT_ADDRESS;
   const heroTitle = getSetting('contact_hero_title') || 'Get In Touch';
@@ -102,7 +98,7 @@ export default function ContactPage() {
       title: 'Email',
       value: contactEmail,
       link: `mailto:${contactEmail}`,
-      description: 'We respond within 24 hours'
+      description: 'We reply as soon as we can during opening hours'
     },
     {
       icon: 'ri-whatsapp-line',
@@ -297,21 +293,21 @@ export default function ContactPage() {
                 </div>
 
                 {submitStatus === 'success' && (
-                  <div className="bg-green-50 border border-green-200 text-green-800 px-6 py-4 rounded-xl flex items-center gap-3">
-                    <i className="ri-checkbox-circle-fill text-xl"></i>
+                  <div role="status" className="bg-green-50 border border-green-200 text-green-800 px-6 py-4 rounded-xl flex items-center gap-3">
+                    <i className="ri-checkbox-circle-fill text-xl" aria-hidden="true"></i>
                     <div>
-                      <p className="font-bold">Message Sent!</p>
-                      <p className="text-sm">We'll get back to you within 24 hours.</p>
+                      <p className="font-bold">Message sent</p>
+                      <p className="text-sm">We received your message and will reply during opening hours.</p>
                     </div>
                   </div>
                 )}
 
                 {submitStatus === 'error' && (
-                  <div className="bg-red-50 border border-red-200 text-red-800 px-6 py-4 rounded-xl flex items-center gap-3">
-                    <i className="ri-error-warning-fill text-xl"></i>
+                  <div role="alert" className="bg-red-50 border border-red-200 text-red-800 px-6 py-4 rounded-xl flex items-center gap-3">
+                    <i className="ri-error-warning-fill text-xl" aria-hidden="true"></i>
                     <div>
-                      <p className="font-bold">Failed to send</p>
-                      <p className="text-sm">Please try again or contact us directly.</p>
+                      <p className="font-bold">Your message was not sent</p>
+                      <p className="text-sm">{errorText || `Please try again, or call or WhatsApp us on ${contactPhone}.`}</p>
                     </div>
                   </div>
                 )}
@@ -319,7 +315,7 @@ export default function ContactPage() {
                 <button
                   type="submit"
                   disabled={isSubmitting || verifying}
-                  className="w-full bg-primary text-white py-4 rounded-xl font-bold text-lg hover:bg-primary transition-all hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="w-full bg-primary text-white py-4 rounded-xl font-bold text-lg hover:bg-primary-dark transition-all hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isSubmitting || verifying ? (
                     <>

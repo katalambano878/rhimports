@@ -3,6 +3,20 @@
 import Link from 'next/link';
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
+import { downloadCsv, csvMoney } from '@/lib/csv';
+
+/** Page through a query 1000 rows at a time (one select is capped at 1000 rows). */
+async function fetchAllRows<T = any>(build: () => any): Promise<T[]> {
+  const pageSize = 1000;
+  const rows: T[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await build().range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...((data || []) as T[]));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows;
+}
 
 export default function AdminCustomersPage() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -22,10 +36,15 @@ export default function AdminCustomersPage() {
       setLoading(true);
 
       // Fetch from new customers table (includes both guests and registered users)
-      const { data: customerData, error: cError } = await supabase
-        .from('customers')
-        .select('*')
-        .order('created_at', { ascending: false });
+      let customerData: any[] | null = null;
+      let cError: any = null;
+      try {
+        customerData = await fetchAllRows(() =>
+          supabase.from('customers').select('*').order('created_at', { ascending: false })
+        );
+      } catch (err) {
+        cError = err;
+      }
 
       if (cError) {
         // Fallback to old profiles-based approach if customers table doesn't exist yet
@@ -78,16 +97,15 @@ export default function AdminCustomersPage() {
   // Fallback for when customers table doesn't exist
   const fetchCustomersFromProfiles = async () => {
     try {
-      const { data: profiles, error: pError } = await supabase
-        .from('profiles')
-        .select('*')
-        .order('created_at', { ascending: false });
+      // Shoppers only: staff and admin accounts are not customers.
+      const profiles = await fetchAllRows<any>(() =>
+        supabase.from('profiles').select('*').eq('role', 'customer').order('created_at', { ascending: false })
+      );
 
-      if (pError) throw pError;
-
-      const { data: orders } = await supabase
-        .from('orders')
-        .select('id, user_id, email, total, created_at, status, shipping_address');
+      // Real sales only: paid and not cancelled or refunded.
+      const orders = (await fetchAllRows<any>(() =>
+        supabase.from('orders').select('id, user_id, email, total, created_at, status, payment_status, shipping_address')
+      )).filter(o => o.payment_status === 'paid' && o.status !== 'cancelled' && o.status !== 'refunded');
 
       // Process registered users
       const registeredCustomers = (profiles || []).map((profile: any) => {
@@ -214,12 +232,17 @@ export default function AdminCustomersPage() {
     'Inactive': 'bg-gray-100 text-gray-700'
   };
 
+  /** Select-all covers the rows currently shown (search + status filter), not the whole list. */
   const handleSelectAll = () => {
-    if (selectedCustomers.length === customers.length) {
-      setSelectedCustomers([]);
-    } else {
-      setSelectedCustomers(customers.map(c => c.id));
-    }
+    const visibleIds = filteredCustomers.map(c => c.id);
+    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedCustomers.includes(id));
+    setSelectedCustomers(allVisibleSelected ? [] : visibleIds);
+  };
+
+  /** Selected customers that are still visible under the current search/filter. */
+  const visibleSelectedCustomers = () => {
+    const visible = new Set(filteredCustomers.map(c => c.id));
+    return customers.filter(c => selectedCustomers.includes(c.id) && visible.has(c.id));
   };
 
   const handleSelectCustomer = (customerId: string) => {
@@ -228,6 +251,68 @@ export default function AdminCustomersPage() {
     } else {
       setSelectedCustomers([...selectedCustomers, customerId]);
     }
+  };
+
+  const handleExportCustomers = (subset?: any[]) => {
+    const data = subset || filteredCustomers;
+    downloadCsv(
+      `customers-${new Date().toISOString().slice(0, 10)}.csv`,
+      ['Name', 'Email', 'Phone', 'Orders', 'Total Spent (GHS)', 'Status', 'Type', 'Joined', 'Last Order'],
+      data.map(c => [
+        c.name,
+        c.email,
+        c.phone === 'N/A' ? '' : c.phone,
+        c.orders,
+        csvMoney(c.totalSpent),
+        c.status,
+        c.isGuest ? 'Guest' : 'Registered',
+        c.joined,
+        c.rawLastOrder ? new Date(c.rawLastOrder).toLocaleDateString() : '',
+      ])
+    );
+  };
+
+  const mailtoHref = (emails: string[]) =>
+    `mailto:?bcc=${emails.map(e => encodeURIComponent(e)).join(',')}&subject=${encodeURIComponent('Hello from RNH Imports')}`;
+
+  const handleEmailCustomer = (customer: any) => {
+    const email = String(customer.email || '').trim();
+    if (!email.includes('@')) {
+      alert('This customer has no email address.');
+      return;
+    }
+    window.location.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('Hello from RNH Imports')}`;
+  };
+
+  const handleBulkEmail = () => {
+    // Bcc so customers never see each other's addresses.
+    const emails = Array.from(new Set(
+      visibleSelectedCustomers().map(c => String(c.email || '').trim()).filter(e => e.includes('@'))
+    ));
+    if (emails.length === 0) {
+      alert('None of the selected customers has an email address.');
+      return;
+    }
+    window.location.href = mailtoHref(emails);
+  };
+
+  const handleDeleteCustomer = async (customer: any) => {
+    if (String(customer.id).startsWith('guest-')) {
+      alert('This guest has no customer record to delete. Their orders stay in Orders.');
+      return;
+    }
+    const label = customer.name !== 'No Name' ? customer.name : customer.email;
+    if (!confirm(
+      `Delete the customer record for ${label}?\n\n` +
+      'Their orders are kept. The record is created again if they order with the same email or phone. This cannot be undone.'
+    )) return;
+    const { error } = await supabase.from('customers').delete().eq('id', customer.id);
+    if (error) {
+      alert('Failed to delete customer: ' + error.message);
+      return;
+    }
+    setCustomers(prev => prev.filter(c => c.id !== customer.id));
+    setSelectedCustomers(prev => prev.filter(id => id !== customer.id));
   };
 
   // Memoized filter and sort
@@ -243,9 +328,9 @@ export default function AdminCustomersPage() {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(c =>
-        c.name.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q) ||
-        c.phone.toLowerCase().includes(q)
+        String(c.name || '').toLowerCase().includes(q) ||
+        String(c.email || '').toLowerCase().includes(q) ||
+        String(c.phone || '').toLowerCase().includes(q)
       );
     }
 
@@ -260,6 +345,11 @@ export default function AdminCustomersPage() {
 
     return result;
   }, [customers, searchQuery, sortOption, filterStatus]);
+
+  // Hidden customers must not stay selected after the search or filter changes.
+  useEffect(() => {
+    setSelectedCustomers([]);
+  }, [searchQuery, filterStatus]);
 
   // Derived Stats
   const stats = useMemo(() => ({
@@ -280,9 +370,13 @@ export default function AdminCustomersPage() {
           <h1 className="text-3xl font-bold text-gray-900">Customers</h1>
           <p className="text-gray-600 mt-1">Manage your customer base and relationships</p>
         </div>
-        <button className="bg-primary hover:bg-primary text-white px-6 py-3 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer">
+        <button
+          onClick={() => handleExportCustomers()}
+          disabled={loading || filteredCustomers.length === 0}
+          className="bg-primary hover:bg-primary text-white px-6 py-3 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           <i className="ri-download-line mr-2"></i>
-          Export Customers
+          Export Customers ({filteredCustomers.length})
         </button>
       </div>
 
@@ -353,15 +447,17 @@ export default function AdminCustomersPage() {
               {selectedCustomers.length} customer{selectedCustomers.length > 1 ? 's' : ''} selected
             </p>
             <div className="flex items-center space-x-2">
-              <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer">
+              <button
+                onClick={handleBulkEmail}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
+              >
                 <i className="ri-mail-line mr-2"></i>
                 Send Email
               </button>
-              <button className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer">
-                <i className="ri-vip-crown-line mr-2"></i>
-                Mark as VIP
-              </button>
-              <button className="px-4 py-2 bg-gray-700 hover:bg-primary text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer">
+              <button
+                onClick={() => handleExportCustomers(visibleSelectedCustomers())}
+                className="px-4 py-2 bg-gray-700 hover:bg-primary text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
+              >
                 <i className="ri-download-line mr-2"></i>
                 Export
               </button>
@@ -376,7 +472,8 @@ export default function AdminCustomersPage() {
                 <th className="py-4 px-6">
                   <input
                     type="checkbox"
-                    checked={selectedCustomers.length === filteredCustomers.length && filteredCustomers.length > 0}
+                    checked={filteredCustomers.length > 0 && filteredCustomers.every(c => selectedCustomers.includes(c.id))}
+                    aria-label="Select all shown customers"
                     onChange={handleSelectAll}
                     className="w-4 h-4 text-gray-900 border-gray-300 rounded focus:ring-gray-600 cursor-pointer"
                   />
@@ -446,10 +543,20 @@ export default function AdminCustomersPage() {
                         >
                           <i className="ri-eye-line text-lg"></i>
                         </Link>
-                        <button className="w-8 h-8 flex items-center justify-center text-gray-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer">
+                        <button
+                          onClick={() => handleEmailCustomer(customer)}
+                          title="Send Email"
+                          aria-label={`Email ${customer.name}`}
+                          className="w-8 h-8 flex items-center justify-center text-gray-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                        >
                           <i className="ri-mail-line text-lg"></i>
                         </button>
-                        <button className="w-8 h-8 flex items-center justify-center text-gray-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer">
+                        <button
+                          onClick={() => handleDeleteCustomer(customer)}
+                          title="Delete Customer"
+                          aria-label={`Delete ${customer.name}`}
+                          className="w-8 h-8 flex items-center justify-center text-gray-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                        >
                           <i className="ri-delete-bin-line text-lg"></i>
                         </button>
                       </div>

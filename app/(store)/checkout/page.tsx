@@ -10,18 +10,70 @@ import { supabase } from '@/lib/supabase';
 import { usePageTitle } from '@/hooks/usePageTitle';
 import { useRecaptcha } from '@/hooks/useRecaptcha';
 
+/** Ghana number: 0XXXXXXXXX or +233XXXXXXXXX (spaces and dashes allowed). */
+const GH_PHONE_RE = /^(0\d{9}|\+233\d{9})$/;
+const cleanPhone = (value: string) => value.replace(/[\s-]/g, '');
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+type AppliedCoupon = {
+  code: string;
+  discount: number;
+  message: string;
+};
+
+type PriceUpdate = {
+  orderNumber: string;
+  orderUuid: string;
+  subtotal: number;
+  discount: number;
+  total: number;
+};
+
+// Ghana's 16 administrative regions
+const REGIONS = [
+  'Ahafo',
+  'Ashanti',
+  'Bono',
+  'Bono East',
+  'Central',
+  'Eastern',
+  'Greater Accra',
+  'North East',
+  'Northern',
+  'Oti',
+  'Savannah',
+  'Upper East',
+  'Upper West',
+  'Volta',
+  'Western',
+  'Western North',
+];
+
 export default function CheckoutPage() {
   usePageTitle('Checkout');
   const router = useRouter();
-  const { cart, subtotal: cartSubtotal, clearCart } = useCart();
+  const { cart, clearCart, ready: cartReady, refreshCart } = useCart();
 
   const [currentStep, setCurrentStep] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
-  const [checkoutType, setCheckoutType] = useState<'guest' | 'account'>('guest');
   const [saveAddress, setSaveAddress] = useState(false);
-  const [savePayment, setSavePayment] = useState(false);
   const [user, setUser] = useState<any>(null);
   const { getToken, verifying } = useRecaptcha();
+
+  // Live price / stock check of the bag when checkout opens.
+  const [cartChecked, setCartChecked] = useState(false);
+  const [cartChanges, setCartChanges] = useState<string[]>([]);
+
+  // Coupon
+  const [couponInput, setCouponInput] = useState('');
+  const [coupon, setCoupon] = useState<AppliedCoupon | null>(null);
+  const [couponError, setCouponError] = useState('');
+  const [couponLoading, setCouponLoading] = useState(false);
+
+  // Set when the server re-priced the order and the total differs.
+  const [priceUpdate, setPriceUpdate] = useState<PriceUpdate | null>(null);
+  const [orderError, setOrderError] = useState('');
 
   const [shippingData, setShippingData] = useState({
     firstName: '',
@@ -33,75 +85,109 @@ export default function CheckoutPage() {
     region: ''
   });
 
-  // Regions for dropdown — customize for your delivery areas
-  // Ghana's 16 administrative regions
-  const regions = [
-    'Ahafo',
-    'Ashanti',
-    'Bono',
-    'Bono East',
-    'Central',
-    'Eastern',
-    'Greater Accra',
-    'North East',
-    'Northern',
-    'Oti',
-    'Savannah',
-    'Upper East',
-    'Upper West',
-    'Volta',
-    'Western',
-    'Western North',
-  ];
+  const deliveryMethod = 'doorstep';
+  const paymentMethod = 'hubtel';
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const [deliveryMethod, setDeliveryMethod] = useState('doorstep');
-  const [paymentMethod, setPaymentMethod] = useState<'hubtel' | 'moolre'>('hubtel');
-  const [errors, setErrors] = useState<any>({});
-
-
-
-  // Check auth and cart
+  // Check auth once
   useEffect(() => {
     async function checkUser() {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         setUser(session.user);
-        setCheckoutType('account'); // Auto-select account checkout if logged in
-        // Pre-fill email if available
         setShippingData(prev => ({ ...prev, email: session.user.email || '' }));
       }
     }
     checkUser();
+  }, []);
 
-    // Small delay to ensure cart load
-    const timer = setTimeout(() => {
-      if (cart.length === 0 && !isLoading) {
-        // router.push('/cart'); // Optional: redirect if empty
-      }
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [cart, router, isLoading]);
+  // Once the saved bag has loaded, re-read current prices and stock.
+  useEffect(() => {
+    if (!cartReady) return;
+    let active = true;
+    refreshCart().then((changes) => {
+      if (!active) return;
+      if (changes && changes.length > 0) setCartChanges(changes.map((c) => c.message));
+      setCartChecked(true);
+    });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cartReady]);
 
   // Scroll to top when step changes
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [currentStep]);
 
-  // Calculate Totals
-  const subtotal = cartSubtotal;
-  const shippingCost = 0; // Delivery options temporarily disabled
-  const tax = 0; // No Tax
-  const total = subtotal + shippingCost + tax;
+  // Totals. Delivery is not priced online: the team contacts the customer
+  // with the delivery cost. No tax is charged. The server re-prices the
+  // order itself; these figures are what the shopper sees.
+  const subtotal = round2(cart.reduce((sum, item) => sum + round2(item.price) * item.quantity, 0));
+  const shippingCost = 0;
+  const tax = 0;
+  const discount = coupon ? round2(Math.min(coupon.discount, subtotal)) : 0;
+  const total = round2(Math.max(0, subtotal - discount));
+
+  const applyCoupon = async (code: string, quiet = false) => {
+    const trimmed = code.trim();
+    if (!trimmed) {
+      setCouponError('Enter a coupon code.');
+      return;
+    }
+    setCouponLoading(true);
+    setCouponError('');
+    try {
+      const res = await fetch('/api/storefront/coupons/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: trimmed, subtotal }),
+      });
+      const result = await res.json().catch(() => null);
+      if (result?.valid) {
+        setCoupon({
+          code: result.code || trimmed.toUpperCase(),
+          discount: Number(result.discount) || 0,
+          message: result.message || '',
+        });
+        setCouponInput('');
+      } else {
+        setCoupon(null);
+        setCouponError(result?.message || (quiet ? 'Your coupon no longer applies to this order.' : 'This coupon code is not valid.'));
+      }
+    } catch {
+      setCouponError('Could not check this coupon right now. Please try again.');
+    } finally {
+      setCouponLoading(false);
+    }
+  };
+
+  const removeCoupon = () => {
+    setCoupon(null);
+    setCouponError('');
+  };
+
+  // Re-check the coupon when the cart total changes (minimum spend, % off).
+  useEffect(() => {
+    if (!coupon) return;
+    const t = setTimeout(() => applyCoupon(coupon.code, true), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subtotal]);
 
   const validateShipping = () => {
-    const newErrors: any = {};
-    if (!shippingData.firstName) newErrors.firstName = 'First name is required';
-    if (!shippingData.lastName) newErrors.lastName = 'Last name is required';
-    if (!shippingData.email) newErrors.email = 'Email is required';
-    else if (!/\S+@\S+\.\S+/.test(shippingData.email)) newErrors.email = 'Invalid email';
-    if (!shippingData.phone) newErrors.phone = 'Phone is required';
-    if (!shippingData.address) newErrors.address = 'Address is required';
-    if (!shippingData.city) newErrors.city = 'City is required';
+    const newErrors: Record<string, string> = {};
+    if (!shippingData.firstName.trim()) newErrors.firstName = 'First name is required';
+    if (!shippingData.lastName.trim()) newErrors.lastName = 'Last name is required';
+    if (!shippingData.email.trim()) newErrors.email = 'Email is required';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(shippingData.email.trim())) newErrors.email = 'Enter a valid email address';
+    if (!shippingData.phone.trim()) newErrors.phone = 'Phone is required';
+    else if (!GH_PHONE_RE.test(cleanPhone(shippingData.phone))) {
+      newErrors.phone = 'Enter a Ghana number like 0241234567 or +233241234567';
+    }
+    if (!shippingData.address.trim()) newErrors.address = 'Address is required';
+    if (!shippingData.city.trim()) newErrors.city = 'City is required';
     if (!shippingData.region) newErrors.region = 'Region is required';
 
     setErrors(newErrors);
@@ -114,222 +200,290 @@ export default function CheckoutPage() {
     }
   };
 
-  const handleContinueToPayment = async () => {
-    // Skip step 3 and directly initiate payment with default method (Moolre/Mobile Money)
-    await handlePlaceOrder();
+  /** Insert or update the shopper's saved address (row-level security: own rows only). */
+  const saveAddressToAccount = async (userId: string) => {
+    const row = {
+      user_id: userId,
+      type: 'shipping' as const,
+      full_name: `${shippingData.firstName} ${shippingData.lastName}`.trim(),
+      phone: cleanPhone(shippingData.phone),
+      address_line1: shippingData.address.trim(),
+      city: shippingData.city.trim(),
+      state: shippingData.region,
+      postal_code: '',
+      country: 'Ghana',
+    };
+    const { data: existing, error: readError } = await supabase
+      .from('addresses')
+      .select('id, address_line1, city')
+      .eq('user_id', userId);
+    if (readError) throw readError;
+    const rows = existing || [];
+    const same = rows.find(
+      (a: any) =>
+        (a.address_line1 || '').trim().toLowerCase() === row.address_line1.toLowerCase() &&
+        (a.city || '').trim().toLowerCase() === row.city.toLowerCase()
+    );
+    if (same) {
+      const { error } = await supabase.from('addresses').update(row).eq('id', same.id);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase.from('addresses').insert([{ ...row, is_default: rows.length === 0 }]);
+      if (error) throw error;
+    }
   };
 
-
-
   const handlePlaceOrder = async () => {
-    if (cart.length === 0) {
-      alert('Your cart is empty');
-      return;
-    }
-
+    if (cart.length === 0) return;
+    setOrderError('');
     setIsLoading(true);
 
     // reCAPTCHA verification
     const isHuman = await getToken('checkout');
     if (!isHuman) {
-      alert('Security verification failed. Please try again.');
+      setOrderError('Security check failed. Please try again.');
       setIsLoading(false);
       return;
     }
 
     try {
       const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-      // Generate tracking number: SLI-XXXXXX (6-char alphanumeric)
-      const trackingId = Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
-      const trackingNumber = `SLI-${trackingId}`;
 
-      // 1. Create Order
-      const { data: order, error: orderError } = await supabase
-        .from('orders')
-        .insert([{
-          order_number: orderNumber,
-          user_id: user?.id || null, // Capture user_id if logged in
-          email: shippingData.email,
-          phone: shippingData.phone,
-          status: 'pending',
-          payment_status: 'pending',
+      // The server creates the order and its items and prices them itself.
+      // Signed-in shoppers prove who they are with their session token.
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+
+      const phone = cleanPhone(shippingData.phone);
+      const cleanShipping = {
+        firstName: shippingData.firstName.trim(),
+        lastName: shippingData.lastName.trim(),
+        email: shippingData.email.trim(),
+        phone,
+        address: shippingData.address.trim(),
+        city: shippingData.city.trim(),
+        region: shippingData.region,
+      };
+      const createRes = await fetch('/api/storefront/orders/create', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          orderNumber,
+          email: cleanShipping.email,
+          phone,
+          shippingData: cleanShipping,
+          couponCode: coupon?.code || undefined,
+          deliveryMethod,
+          paymentMethod,
           currency: 'GHS',
-          subtotal: subtotal,
-          tax_total: tax,
-          shipping_total: shippingCost,
-          discount_total: 0,
-          total: total,
-          shipping_method: deliveryMethod,
-          payment_method: paymentMethod,
-          shipping_address: shippingData,
-          billing_address: shippingData, // Using same for now
-          metadata: {
-            guest_checkout: !user,
-            first_name: shippingData.firstName,
-            last_name: shippingData.lastName,
-            tracking_number: trackingNumber,
-            payment_method: paymentMethod
-          }
-        }])
-        .select()
-        .single();
-
-      if (orderError) throw orderError;
-
-      // 2. Create Order Items (with UUID validation)
-      // Helper to check if string is a valid UUID
-      const isValidUUID = (str: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
-      
-      // Build order items, resolving slugs to UUIDs if needed
-      const orderItems = [];
-      
-      // Batch-fetch product metadata (for preorder_shipping etc.)
-      const productIds = cart.map(item => item.id).filter(id => isValidUUID(id));
-      const { data: productsData } = productIds.length > 0
-        ? await supabase.from('products').select('id, metadata').in('id', productIds)
-        : { data: [] };
-      const productMetaMap = new Map((productsData || []).map((p: any) => [p.id, p.metadata]));
-      
-      for (const item of cart) {
-        let productId = item.id;
-        
-        // If id is not a valid UUID, it might be a slug - try to resolve it.
-        // Use parameterized .eq() (never interpolate into a PostgREST .or()).
-        if (!isValidUUID(productId)) {
-          const { data: product } = await supabase
-            .from('products')
-            .select('id, metadata')
-            .eq('slug', productId)
-            .single();
-          
-          if (product) {
-            productId = product.id;
-            productMetaMap.set(product.id, product.metadata);
-          } else {
-            throw new Error(`Product not found: ${item.name}. Please remove it from your cart and try again.`);
-          }
-        }
-        
-        const prodMeta = productMetaMap.get(productId);
-        
-        orderItems.push({
-          order_id: order.id,
-          product_id: productId,
-          product_name: item.name,
-          variant_name: item.variant,
-          quantity: item.quantity,
-          unit_price: item.price,
-          total_price: item.price * item.quantity,
-          metadata: {
+          subtotal,
+          tax,
+          shippingCost,
+          total,
+          items: cart.map((item) => ({
+            id: item.id,
+            name: item.name,
+            variant: item.variant,
+            variantId: item.variantId,
+            quantity: item.quantity,
+            price: item.price,
             image: item.image,
             slug: item.slug,
-            preorder_shipping: prodMeta?.preorder_shipping || null
-          }
-        });
-      }
-
-      const { error: itemsError } = await supabase
-        .from('order_items')
-        .insert(orderItems);
-
-      if (itemsError) throw itemsError;
-
-      // Note: Stock reduction happens in mark_order_paid when payment is confirmed
-
-      // 3. Upsert Customer Record (for both guest and registered users)
-      const fullName = `${shippingData.firstName} ${shippingData.lastName}`.trim();
-      await supabase.rpc('upsert_customer_from_order', {
-        p_email: shippingData.email,
-        p_phone: shippingData.phone,
-        p_full_name: fullName,
-        p_first_name: shippingData.firstName,
-        p_last_name: shippingData.lastName,
-        p_user_id: user?.id || null,
-        p_address: shippingData
+          })),
+        }),
       });
 
-      // 4. Handle Payment Redirects or Completion
-      if (paymentMethod === 'hubtel' || paymentMethod === 'moolre') {
-        try {
-          const endpoint = paymentMethod === 'hubtel' ? '/api/payment/hubtel' : '/api/payment/moolre';
-          const requestBody = paymentMethod === 'hubtel'
-            ? { orderId: orderNumber, customerEmail: shippingData.email }
-            : { orderId: orderNumber, amount: total, customerEmail: shippingData.email };
-
-          const paymentRes = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestBody),
-          });
-          let paymentResult: {
-            success?: boolean;
-            message?: string;
-            url?: string;
-            removedItems?: { product_name: string; variant_name?: string; quantity: number }[];
-            all_out_of_stock?: boolean;
-          };
-          try {
-            paymentResult = await paymentRes.json();
-          } catch {
-            throw new Error(paymentRes.ok ? 'Invalid response from payment server.' : `Payment error (${paymentRes.status}). Please try again or contact support.`);
-          }
-          if (!paymentResult.success) {
-            if (paymentResult.all_out_of_stock) {
-              throw new Error('All items in your order are out of stock. Please update your cart and try again.');
-            }
-            throw new Error(paymentResult.message || 'Payment initialization failed');
-          }
-          if (!paymentResult.url) {
-            throw new Error('No payment link received. Please try again or contact support.');
-          }
-          if (paymentResult.removedItems && paymentResult.removedItems.length > 0) {
-            const removedNames = paymentResult.removedItems
-              .map((item) => `${item.product_name}${item.variant_name ? ` (${item.variant_name})` : ''}`)
-              .join(', ');
-            alert(`Some items were out of stock and removed from your order: ${removedNames}. The updated total will be charged.`);
-          }
-          clearCart();
-          window.location.href = paymentResult.url;
-          return;
-        } catch (paymentErr: any) {
-          console.error('Payment Error:', paymentErr);
-          alert('Failed to initialize payment: ' + (paymentErr?.message || 'Please try again or contact support.'));
-          setIsLoading(false);
-          return;
-        }
+      let created: {
+        id?: string;
+        order_number?: string;
+        subtotal?: number;
+        discount_total?: number;
+        total?: number;
+        priceChanged?: boolean;
+        error?: string;
+      } = {};
+      try {
+        created = await createRes.json();
+      } catch {
+        throw new Error(`The checkout server returned an invalid response (${createRes.status}).`);
       }
 
-      // 5. Send Notifications (For COD or others)
-      fetch('/api/notifications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'order_created',
-          payload: order
-        })
-      }).catch(err => console.error('Notification trigger error:', err));
+      if (!createRes.ok || !created.id) {
+        throw new Error(created.error || 'We could not place your order. Please try again.');
+      }
 
-      // 6. Clear Cart & Redirect (For COD)
-      clearCart();
-      router.push(`/order-success?order=${orderNumber}`);
+      const order = { id: created.id, order_number: created.order_number || orderNumber };
 
+      // Save the address for next time (signed-in shoppers who ticked the box).
+      if (user && saveAddress) {
+        await saveAddressToAccount(user.id).catch((err) => console.error('Save address failed:', err));
+      }
+
+      // The server prices the order itself. If that differs from what the
+      // shopper saw, stop and show the new total before taking payment.
+      if (created.priceChanged) {
+        setPriceUpdate({
+          orderNumber: order.order_number,
+          orderUuid: order.id,
+          subtotal: Number(created.subtotal ?? subtotal),
+          discount: Number(created.discount_total ?? 0),
+          total: Number(created.total ?? total),
+        });
+        return;
+      }
+
+      await continueToPayment(order.order_number, order.id);
     } catch (err: any) {
       console.error('Checkout error:', err);
-      alert('Failed to place order: ' + err.message);
+      setOrderError(err?.message || 'We could not place your order. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
+
+  /** Start Hubtel payment for a created order. The server works out the amount. */
+  const continueToPayment = async (orderNumber: string, orderUuid: string) => {
+    setIsLoading(true);
+    try {
+      const paymentRes = await fetch('/api/payment/hubtel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: orderNumber,
+          orderUuid,
+          customerEmail: shippingData.email.trim(),
+        }),
+      });
+
+      let paymentResult: any = null;
+      try {
+        paymentResult = await paymentRes.json();
+      } catch {
+        throw new Error(`Payment gateway returned an invalid response (${paymentRes.status})`);
+      }
+
+      // Every item went out of stock between cart and payment.
+      if (paymentResult?.all_out_of_stock) {
+        clearCart();
+        router.push(`/pay/${encodeURIComponent(orderNumber)}?stock=empty`);
+        return;
+      }
+
+      if (!paymentRes.ok || !paymentResult?.success || !paymentResult?.url) {
+        throw new Error(paymentResult?.message || 'Payment initialization failed');
+      }
+
+      if (Array.isArray(paymentResult.removedItems) && paymentResult.removedItems.length > 0) {
+        const lines = paymentResult.removedItems
+          .map((it: { name?: string; product_name?: string; variant?: string; variant_name?: string }) => {
+            const name = it.name || it.product_name || 'Item';
+            const variant = it.variant || it.variant_name;
+            return `• ${name}${variant ? ` (${variant})` : ''}`;
+          })
+          .join('\n');
+        const newTotal = typeof paymentResult.amount === 'number'
+          ? `GH₵ ${paymentResult.amount.toFixed(2)}`
+          : 'the updated amount';
+        alert(
+          `Some items went out of stock and were removed from your order:\n\n${lines}\n\n` +
+          `You'll be charged ${newTotal} for the remaining items.`
+        );
+      }
+
+      clearCart();
+      window.location.href = paymentResult.url;
+    } catch (paymentErr) {
+      console.error('Payment Error:', paymentErr);
+      // The order exists; send the shopper to the retry page for it.
+      clearCart();
+      router.push(`/pay/${encodeURIComponent(orderNumber)}?init=failed`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const inputClass = (hasError?: string) =>
+    `w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${hasError ? 'border-red-500' : 'border-gray-300'}`;
+  const labelClass = 'block text-sm font-semibold text-gray-900 mb-2';
+  const errorText = (field: string) =>
+    errors[field] ? (
+      <p id={`checkout-${field}-error`} className="text-sm text-red-600 mt-1">{errors[field]}</p>
+    ) : null;
+  const errorProps = (field: string) => ({
+    'aria-invalid': !!errors[field],
+    'aria-describedby': errors[field] ? `checkout-${field}-error` : undefined,
+  });
+
+  if (priceUpdate) {
+    return (
+      <main className="min-h-screen bg-gray-50 py-20">
+        <div className="max-w-md mx-auto text-center px-4">
+          <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
+            <i className="ri-price-tag-3-line text-4xl text-amber-600" aria-hidden="true"></i>
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Prices were updated</h1>
+          <p className="text-gray-600">
+            Some prices changed since you added items to your cart. Your order{' '}
+            <span className="font-semibold">{priceUpdate.orderNumber}</span> has been saved with today&apos;s prices.
+          </p>
+          <dl className="mt-6 space-y-2 rounded-xl bg-white shadow-sm p-5 text-left text-sm">
+            <div className="flex justify-between">
+              <dt className="text-gray-600">Subtotal</dt>
+              <dd className="font-semibold text-gray-900">GH₵ {priceUpdate.subtotal.toFixed(2)}</dd>
+            </div>
+            {priceUpdate.discount > 0 && (
+              <div className="flex justify-between">
+                <dt className="text-gray-600">Discount</dt>
+                <dd className="font-semibold text-emerald-700">− GH₵ {priceUpdate.discount.toFixed(2)}</dd>
+              </div>
+            )}
+            <div className="flex justify-between border-t border-gray-200 pt-2 text-base">
+              <dt className="font-bold text-gray-900">New total</dt>
+              <dd className="font-bold text-gray-900">GH₵ {priceUpdate.total.toFixed(2)}</dd>
+            </div>
+          </dl>
+          <button
+            type="button"
+            onClick={() => continueToPayment(priceUpdate.orderNumber, priceUpdate.orderUuid)}
+            disabled={isLoading}
+            className="mt-8 w-full bg-primary hover:bg-primary-dark text-white py-4 rounded-lg font-semibold transition-colors disabled:opacity-70"
+          >
+            {isLoading ? 'Processing…' : `Continue to payment (GH₵ ${priceUpdate.total.toFixed(2)})`}
+          </button>
+          <Link href="/cart" className="mt-4 inline-block text-sm font-medium text-gray-600 hover:text-gray-900">
+            Back to your cart
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (!cartReady || (!cartChecked && cart.length > 0)) {
+    return (
+      <main className="min-h-screen bg-gray-50 py-28">
+        <div className="flex justify-center" role="status" aria-live="polite">
+          <i className="ri-loader-4-line animate-spin text-4xl text-gray-500" aria-hidden="true"></i>
+          <span className="sr-only">Loading your cart…</span>
+        </div>
+      </main>
+    );
+  }
 
   if (cart.length === 0 && !isLoading) {
     return (
       <main className="min-h-screen bg-gray-50 py-20">
         <div className="max-w-md mx-auto text-center px-4">
           <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
-            <i className="ri-shopping-cart-line text-4xl text-gray-300"></i>
+            <i className="ri-shopping-cart-line text-4xl text-gray-300" aria-hidden="true"></i>
           </div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Your cart is empty</h1>
           <p className="text-gray-600 mb-8">Add some items to start the checkout process.</p>
+          {cartChanges.length > 0 && (
+            <ul className="mb-8 space-y-1 text-sm text-amber-800" role="status">
+              {cartChanges.map((msg) => <li key={msg}>{msg}</li>)}
+            </ul>
+          )}
           <Link href="/shop" className="inline-block bg-primary text-white px-8 py-3 rounded-lg font-semibold hover:bg-primary transition-colors">
             Return to Shop
           </Link>
@@ -343,57 +497,59 @@ export default function CheckoutPage() {
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="mb-8">
           <Link href="/cart" className="text-gray-600 hover:text-gray-900 font-medium inline-flex items-center whitespace-nowrap">
-            <i className="ri-arrow-left-line mr-2"></i>
+            <i className="ri-arrow-left-line mr-2" aria-hidden="true"></i>
             Back to Cart
           </Link>
         </div>
 
         <h1 className="text-3xl font-bold text-gray-900 mb-8">Checkout</h1>
 
+        {cartChanges.length > 0 && (
+          <div className="mb-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="status">
+            <p className="font-semibold">Your cart was updated with current prices and stock</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">
+              {cartChanges.map((msg) => <li key={msg}>{msg}</li>)}
+            </ul>
+          </div>
+        )}
+
         {currentStep === 1 && (
           <div className="mb-8 bg-white rounded-xl shadow-sm p-6">
             <h2 className="text-xl font-bold text-gray-900 mb-6">Checkout As</h2>
-            <div className="grid md:grid-cols-2 gap-4">
-              <button
-                onClick={() => !user && setCheckoutType('guest')}
-                className={`p-6 rounded-xl border-2 transition-all text-left cursor-pointer ${checkoutType === 'guest'
-                  ? 'border-gray-900 bg-gray-50'
-                  : 'border-gray-200 hover:border-gray-300'
-                  } ${user ? 'opacity-50 cursor-not-allowed' : ''}`}
-                disabled={!!user}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <i className="ri-user-line text-3xl text-gray-900"></i>
-                  <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${checkoutType === 'guest' ? 'border-gray-900 bg-primary' : 'border-gray-300'
-                    }`}>
-                    {checkoutType === 'guest' && <i className="ri-check-line text-white text-sm"></i>}
-                  </div>
+            {user ? (
+              <div className="p-6 rounded-xl border-2 border-gray-900 bg-gray-50 flex items-center gap-4">
+                <i className="ri-account-circle-line text-3xl text-gray-900" aria-hidden="true"></i>
+                <div className="min-w-0">
+                  <h3 className="text-lg font-bold text-gray-900">My Account</h3>
+                  <p className="text-sm text-gray-600 break-words">Signed in as {user.email}. This order will show in your account.</p>
                 </div>
-                <h3 className="text-lg font-bold text-gray-900 mb-2">Guest Checkout</h3>
-                <p className="text-sm text-gray-600">Quick checkout without creating an account</p>
-                {user && <p className="text-xs text-gray-700 mt-2">You are logged in</p>}
-              </button>
+              </div>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="p-6 rounded-xl border-2 border-gray-900 bg-gray-50">
+                  <div className="flex items-center justify-between mb-3">
+                    <i className="ri-user-line text-3xl text-gray-900" aria-hidden="true"></i>
+                    <div className="w-6 h-6 rounded-full border-2 flex items-center justify-center border-gray-900 bg-primary">
+                      <i className="ri-check-line text-white text-sm" aria-hidden="true"></i>
+                    </div>
+                  </div>
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">Guest Checkout</h3>
+                  <p className="text-sm text-gray-600">Check out without an account. We&apos;ll send order updates to your email and phone.</p>
+                </div>
 
-              <button
-                onClick={() => setCheckoutType('account')}
-                className={`p-6 rounded-xl border-2 transition-all text-left cursor-pointer ${checkoutType === 'account'
-                  ? 'border-gray-900 bg-gray-50'
-                  : 'border-gray-200 hover:border-gray-300'
-                  }`}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <i className="ri-account-circle-line text-3xl text-gray-900"></i>
-                  <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${checkoutType === 'account' ? 'border-gray-900 bg-primary' : 'border-gray-300'
-                    }`}>
-                    {checkoutType === 'account' && <i className="ri-check-line text-white text-sm"></i>}
+                <Link
+                  href="/auth/signup?redirect=/checkout"
+                  className="block p-6 rounded-xl border-2 border-gray-200 hover:border-gray-300 transition-all text-left"
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <i className="ri-account-circle-line text-3xl text-gray-900" aria-hidden="true"></i>
+                    <i className="ri-arrow-right-line text-xl text-gray-400" aria-hidden="true"></i>
                   </div>
-                </div>
-                <h3 className="text-lg font-bold text-gray-900 mb-2">{user ? 'My Account' : 'Create Account'}</h3>
-                <p className="text-sm text-gray-600">
-                  {user ? `Logged in as ${user.email}` : 'Save info, track orders & earn loyalty points'}
-                </p>
-              </button>
-            </div>
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">Create an Account</h3>
+                  <p className="text-sm text-gray-600">See your orders and saved addresses in one place. Your cart stays saved.</p>
+                </Link>
+              </div>
+            )}
           </div>
         )}
 
@@ -402,278 +558,297 @@ export default function CheckoutPage() {
         <div className="grid lg:grid-cols-3 gap-8 mt-8">
           <div className="lg:col-span-2">
             {currentStep === 1 && (
-              <>
-                <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-                  <h2 className="text-xl font-bold text-gray-900 mb-6">Shipping Information</h2>
+              <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+                <h2 className="text-xl font-bold text-gray-900 mb-6">Shipping Information</h2>
 
+                <form
+                  noValidate
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleContinueToDelivery();
+                  }}
+                >
                   <div className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-semibold text-gray-900 mb-2">
-                          First Name *
-                        </label>
+                        <label htmlFor="checkout-firstName" className={labelClass}>First Name *</label>
                         <input
+                          id="checkout-firstName"
                           type="text"
+                          autoComplete="given-name"
                           value={shippingData.firstName}
                           onChange={(e) => setShippingData({ ...shippingData, firstName: e.target.value })}
-                          className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${errors.firstName ? 'border-red-500' : 'border-gray-300'
-                            }`}
+                          className={inputClass(errors.firstName)}
                           placeholder="John"
+                          {...errorProps('firstName')}
                         />
-                        {errors.firstName && <p className="text-sm text-red-600 mt-1">{errors.firstName}</p>}
+                        {errorText('firstName')}
                       </div>
                       <div>
-                        <label className="block text-sm font-semibold text-gray-900 mb-2">
-                          Last Name *
-                        </label>
+                        <label htmlFor="checkout-lastName" className={labelClass}>Last Name *</label>
                         <input
+                          id="checkout-lastName"
                           type="text"
+                          autoComplete="family-name"
                           value={shippingData.lastName}
                           onChange={(e) => setShippingData({ ...shippingData, lastName: e.target.value })}
-                          className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${errors.lastName ? 'border-red-500' : 'border-gray-300'
-                            }`}
+                          className={inputClass(errors.lastName)}
                           placeholder="Doe"
+                          {...errorProps('lastName')}
                         />
-                        {errors.lastName && <p className="text-sm text-red-600 mt-1">{errors.lastName}</p>}
+                        {errorText('lastName')}
                       </div>
                     </div>
 
                     <div>
-                      <label className="block text-sm font-semibold text-gray-900 mb-2">
-                        Email Address *
-                      </label>
+                      <label htmlFor="checkout-email" className={labelClass}>Email Address *</label>
                       <input
+                        id="checkout-email"
                         type="email"
+                        autoComplete="email"
                         value={shippingData.email}
-                        readOnly={!!user} // Make read-only if logged in (optional, but safer)
+                        readOnly={!!user}
                         onChange={(e) => setShippingData({ ...shippingData, email: e.target.value })}
-                        className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${errors.email ? 'border-red-500' : 'border-gray-300'
-                          } ${user ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                        className={`${inputClass(errors.email)} ${user ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                         placeholder="you@example.com"
+                        {...errorProps('email')}
                       />
-                      {errors.email && <p className="text-sm text-red-600 mt-1">{errors.email}</p>}
+                      {errorText('email')}
                     </div>
 
                     <div>
-                      <label className="block text-sm font-semibold text-gray-900 mb-2">
-                        Phone Number *
-                      </label>
+                      <label htmlFor="checkout-phone" className={labelClass}>Phone Number *</label>
                       <input
+                        id="checkout-phone"
                         type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
                         value={shippingData.phone}
                         onChange={(e) => setShippingData({ ...shippingData, phone: e.target.value })}
-                        className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${errors.phone ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        placeholder="Your phone number"
+                        className={inputClass(errors.phone)}
+                        placeholder="024 123 4567"
+                        aria-invalid={!!errors.phone}
+                        aria-describedby={errors.phone ? 'checkout-phone-error' : 'checkout-phone-help'}
                       />
-                      {errors.phone && <p className="text-sm text-red-600 mt-1">{errors.phone}</p>}
+                      {errors.phone ? (
+                        errorText('phone')
+                      ) : (
+                        <p id="checkout-phone-help" className="text-xs text-gray-500 mt-1">A Ghana number, e.g. 0241234567 or +233241234567.</p>
+                      )}
                     </div>
 
                     <div>
-                      <label className="block text-sm font-semibold text-gray-900 mb-2">
-                        Street Address *
-                      </label>
+                      <label htmlFor="checkout-address" className={labelClass}>Street Address *</label>
                       <input
+                        id="checkout-address"
                         type="text"
+                        autoComplete="street-address"
                         value={shippingData.address}
                         onChange={(e) => setShippingData({ ...shippingData, address: e.target.value })}
-                        className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${errors.address ? 'border-red-500' : 'border-gray-300'
-                          }`}
+                        className={inputClass(errors.address)}
                         placeholder="House number and street name"
+                        {...errorProps('address')}
                       />
-                      {errors.address && <p className="text-sm text-red-600 mt-1">{errors.address}</p>}
+                      {errorText('address')}
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-semibold text-gray-900 mb-2">
-                          City *
-                        </label>
+                        <label htmlFor="checkout-city" className={labelClass}>City *</label>
                         <input
+                          id="checkout-city"
                           type="text"
+                          autoComplete="address-level2"
                           value={shippingData.city}
                           onChange={(e) => setShippingData({ ...shippingData, city: e.target.value })}
-                          className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${errors.city ? 'border-red-500' : 'border-gray-300'
-                            }`}
+                          className={inputClass(errors.city)}
                           placeholder="Your city"
+                          {...errorProps('city')}
                         />
-                        {errors.city && <p className="text-sm text-red-600 mt-1">{errors.city}</p>}
+                        {errorText('city')}
                       </div>
                       <div>
-                        <label className="block text-sm font-semibold text-gray-900 mb-2">
-                          Region *
-                        </label>
+                        <label htmlFor="checkout-region" className={labelClass}>Region *</label>
                         <select
+                          id="checkout-region"
+                          autoComplete="address-level1"
                           value={shippingData.region}
                           onChange={(e) => setShippingData({ ...shippingData, region: e.target.value })}
-                          className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 bg-white ${errors.region ? 'border-red-500' : 'border-gray-300'
-                            }`}
+                          className={`${inputClass(errors.region)} bg-white`}
+                          {...errorProps('region')}
                         >
                           <option value="">Select Region</option>
-                          {regions.map((region) => (
+                          {REGIONS.map((region) => (
                             <option key={region} value={region}>{region}</option>
                           ))}
                         </select>
-                        {errors.region && <p className="text-sm text-red-600 mt-1">{errors.region}</p>}
+                        {errorText('region')}
                       </div>
                     </div>
 
-                    {checkoutType === 'account' && (
-                      <label className="flex items-center space-x-3 cursor-pointer">
+                    {user && (
+                      <div className="flex items-center gap-3">
                         <input
+                          id="checkout-save-address"
                           type="checkbox"
                           checked={saveAddress}
                           onChange={(e) => setSaveAddress(e.target.checked)}
                           className="w-5 h-5 text-gray-900 rounded border-gray-300 focus:ring-gray-600"
                         />
-                        <span className="text-sm text-gray-700">Save this address for future orders</span>
-                      </label>
+                        <label htmlFor="checkout-save-address" className="text-sm text-gray-700 cursor-pointer">
+                          Save this address to my account
+                        </label>
+                      </div>
                     )}
                   </div>
 
                   <button
-                    onClick={handleContinueToDelivery}
+                    type="submit"
                     className="w-full mt-6 bg-primary hover:bg-primary text-white py-4 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer"
                   >
                     Continue to Delivery
                   </button>
-                </div>
-
-
-              </>
+                </form>
+              </div>
             )}
 
             {currentStep === 2 && (
-              <>
-                <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-                  <h2 className="text-xl font-bold text-gray-900 mb-6">Delivery Method</h2>
-                  <div className="space-y-4">
-                    <label className={`flex items-center justify-between p-4 border-2 rounded-lg cursor-pointer transition-colors ${deliveryMethod === 'doorstep' ? 'border-gray-900 bg-gray-50' : 'border-gray-300 hover:border-gray-400'
-                      }`}>
-                      <div className="flex items-center space-x-4">
-                        <input
-                          type="radio"
-                          name="delivery"
-                          value="doorstep"
-                          checked={deliveryMethod === 'doorstep'}
-                          onChange={(e) => setDeliveryMethod(e.target.value)}
-                          className="w-5 h-5 text-gray-900"
-                        />
-                        <div>
-                          <p className="font-semibold text-gray-900">Doorstep Delivery</p>
-                          <p className="text-sm text-gray-600">We will contact you with the delivery cost</p>
-                        </div>
-                      </div>
-                      <p className="font-semibold text-amber-600 text-sm">At a Cost</p>
-                    </label>
-
-                    {/* Comprehensive delivery options - to be re-enabled later
-                    <label className={`flex items-center justify-between p-4 border-2 rounded-lg cursor-pointer transition-colors ${deliveryMethod === 'accra' ? 'border-gray-900 bg-gray-50' : 'border-gray-300 hover:border-gray-400'
-                      }`}>
-                      <div className="flex items-center space-x-4">
-                        <input type="radio" name="delivery" value="accra" checked={deliveryMethod === 'accra'} onChange={(e) => setDeliveryMethod(e.target.value)} className="w-5 h-5 text-gray-900" />
-                        <div>
-                          <p className="font-semibold text-gray-900">Local Delivery</p>
-                          <p className="text-sm text-gray-600">Delivery within local area</p>
-                        </div>
-                      </div>
-                      <p className="font-bold text-gray-900">GH₵ 40.00</p>
-                    </label>
-                    <label className={`flex items-center justify-between p-4 border-2 rounded-lg cursor-pointer transition-colors ${deliveryMethod === 'outside-accra' ? 'border-gray-900 bg-gray-50' : 'border-gray-300 hover:border-gray-400'
-                      }`}>
-                      <div className="flex items-center space-x-4">
-                        <input type="radio" name="delivery" value="outside-accra" checked={deliveryMethod === 'outside-accra'} onChange={(e) => setDeliveryMethod(e.target.value)} className="w-5 h-5 text-gray-900" />
-                        <div>
-                          <p className="font-semibold text-gray-900">Regional Delivery</p>
-                          <p className="text-sm text-gray-600">Delivery to regional pickup points</p>
-                        </div>
-                      </div>
-                      <p className="font-bold text-gray-900">GH₵ 30.00</p>
-                    </label>
-                    */}
+              <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+                <h2 className="text-xl font-bold text-gray-900 mb-6">Delivery Method</h2>
+                <div className="flex items-center justify-between gap-4 p-4 border-2 rounded-lg border-gray-900 bg-gray-50">
+                  <div className="flex items-center gap-4">
+                    <i className="ri-truck-line text-xl text-gray-700" aria-hidden="true"></i>
+                    <div>
+                      <p className="font-semibold text-gray-900">Doorstep Delivery</p>
+                      <p className="text-sm text-gray-600">We will contact you with the delivery cost</p>
+                    </div>
                   </div>
+                  <p className="font-semibold text-amber-600 text-sm whitespace-nowrap">At a Cost</p>
+                </div>
 
-                  <h2 className="text-xl font-bold text-gray-900 mt-8 mb-4">Payment Method</h2>
-                  <p className="text-sm text-gray-600 mb-4">Choose how you&apos;d like to pay. You&apos;ll be redirected to a secure checkout page.</p>
-                  <div className="space-y-3">
-                    <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-colors ${paymentMethod === 'hubtel' ? 'border-gray-900 bg-gray-50' : 'border-gray-300 hover:border-gray-400'}`}>
-                      <input
-                        type="radio"
-                        name="payment"
-                        value="hubtel"
-                        checked={paymentMethod === 'hubtel'}
-                        onChange={() => setPaymentMethod('hubtel')}
-                        className="w-5 h-5 text-gray-900"
-                      />
-                      <i className="ri-secure-payment-line text-xl text-gray-600 flex-shrink-0"></i>
-                      <div className="min-w-0">
-                        <p className="font-semibold text-gray-900">Hubtel Online Checkout</p>
-                        <p className="text-xs text-gray-600 truncate">Mobile Money, card &amp; more</p>
-                      </div>
-                    </label>
-
-                    {/* Moolre temporarily hidden — leave only Hubtel
-                    <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-colors ${paymentMethod === 'moolre' ? 'border-gray-900 bg-gray-50' : 'border-gray-300 hover:border-gray-400'}`}>
-                      <input
-                        type="radio"
-                        name="payment"
-                        value="moolre"
-                        checked={paymentMethod === 'moolre'}
-                        onChange={() => setPaymentMethod('moolre')}
-                        className="w-5 h-5 text-gray-900"
-                      />
-                      <i className="ri-smartphone-line text-xl text-gray-600 flex-shrink-0"></i>
-                      <div className="min-w-0">
-                        <p className="font-semibold text-gray-900">Mobile Money (Moolre)</p>
-                        <p className="text-xs text-gray-600 truncate">MTN, Vodafone, AirtelTigo</p>
-                      </div>
-                    </label>
-                    */}
-                  </div>
-
-                  <div className="flex flex-col-reverse md:flex-row gap-4 mt-6">
-                    <button
-                      onClick={() => setCurrentStep(1)}
-                      disabled={isLoading}
-                      className="flex-1 border-2 border-gray-300 hover:border-gray-400 text-gray-700 py-4 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={handleContinueToPayment}
-                      disabled={isLoading}
-                      className="flex-1 bg-primary hover:bg-primary text-white py-4 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-70 flex items-center justify-center"
-                    >
-                      {isLoading ? (
-                        <>
-                          <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          Processing...
-                        </>
-                      ) : (
-                        paymentMethod === 'hubtel' ? 'Pay with Hubtel' : 'Pay with Mobile Money'
-                      )}
-                    </button>
+                <h2 className="text-xl font-bold text-gray-900 mt-8 mb-4">Payment Method</h2>
+                <p className="text-sm text-gray-600 mb-4">You&apos;ll be redirected to Hubtel&apos;s secure checkout page to pay.</p>
+                <div className="flex items-center gap-3 p-4 border-2 rounded-xl border-gray-900 bg-gray-50">
+                  <i className="ri-secure-payment-line text-xl text-gray-600 flex-shrink-0" aria-hidden="true"></i>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-gray-900">Hubtel Online Checkout</p>
+                    <p className="text-xs text-gray-600">Mobile Money, card &amp; more</p>
                   </div>
                 </div>
 
+                {orderError && (
+                  <p className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+                    {orderError}
+                  </p>
+                )}
 
-              </>
+                <div className="flex flex-col-reverse md:flex-row gap-4 mt-6">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStep(1)}
+                    disabled={isLoading}
+                    className="flex-1 border-2 border-gray-300 hover:border-gray-400 text-gray-700 py-4 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePlaceOrder}
+                    disabled={isLoading || verifying || couponLoading}
+                    className="flex-1 bg-primary hover:bg-primary text-white py-4 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-70 flex items-center justify-center"
+                  >
+                    {isLoading ? (
+                      <>
+                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Processing...
+                      </>
+                    ) : (
+                      `Pay GH₵ ${total.toFixed(2)} with Hubtel`
+                    )}
+                  </button>
+                </div>
+              </div>
             )}
-
-            {/* Step 3 removed - payment now initiates directly from step 2 */}
           </div>
 
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1 space-y-4">
             <OrderSummary
               items={cart}
               subtotal={subtotal}
               shipping={shippingCost}
               tax={tax}
               total={total}
+              discount={discount}
+              couponCode={coupon?.code}
             />
+
+            <div className="bg-white rounded-xl shadow-sm p-5">
+              {coupon ? (
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0" role="status">
+                    <p className="text-sm font-semibold text-gray-900">
+                      Coupon <span className="font-mono">{coupon.code}</span> applied
+                    </p>
+                    <p className="mt-0.5 text-sm text-emerald-700">
+                      {coupon.message || `You save GH₵ ${discount.toFixed(2)}`}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={removeCoupon}
+                    disabled={isLoading}
+                    className="text-sm font-medium text-gray-600 underline hover:text-gray-900 disabled:opacity-50"
+                    aria-label={`Remove coupon ${coupon.code}`}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    applyCoupon(couponInput);
+                  }}
+                >
+                  <label htmlFor="checkout-coupon" className="mb-2 block text-sm font-semibold text-gray-900">
+                    Coupon code <span className="font-normal text-gray-500">(optional)</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      id="checkout-coupon"
+                      type="text"
+                      value={couponInput}
+                      onChange={(e) => {
+                        setCouponInput(e.target.value);
+                        if (couponError) setCouponError('');
+                      }}
+                      autoComplete="off"
+                      autoCapitalize="characters"
+                      aria-invalid={!!couponError}
+                      aria-describedby={couponError ? 'checkout-coupon-error' : undefined}
+                      className={`min-w-0 flex-1 px-3 py-2.5 border-2 rounded-lg uppercase focus:ring-2 focus:ring-gray-600 focus:border-gray-600 ${couponError ? 'border-red-500' : 'border-gray-300'}`}
+                      placeholder="Enter code"
+                    />
+                    <button
+                      type="submit"
+                      disabled={couponLoading || !couponInput.trim()}
+                      className="px-4 py-2.5 rounded-lg bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 disabled:opacity-50"
+                    >
+                      {couponLoading ? 'Checking…' : 'Apply'}
+                    </button>
+                  </div>
+                  {couponError && (
+                    <p id="checkout-coupon-error" className="mt-2 text-sm text-red-600" role="alert">{couponError}</p>
+                  )}
+                </form>
+              )}
+              {coupon && couponError && (
+                <p className="mt-2 text-sm text-red-600" role="alert">{couponError}</p>
+              )}
+            </div>
           </div>
         </div>
       </div>

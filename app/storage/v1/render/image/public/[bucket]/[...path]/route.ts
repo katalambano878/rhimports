@@ -1,6 +1,12 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { objectFilePath, readObject, renderCacheFilePath } from "@/lib/db/storage";
+import {
+  objectFilePath,
+  objectResponseHeaders,
+  PUBLIC_BUCKETS,
+  readObject,
+  renderCacheFilePath,
+} from "@/lib/db/storage";
 
 // Mirrors Supabase's image transformation endpoint:
 //   /storage/v1/render/image/public/<bucket>/<path>?width=480&quality=72
@@ -27,7 +33,7 @@ function imageResponse(bytes: Buffer, contentType: string): Response {
   return new Response(new Uint8Array(bytes), {
     status: 200,
     headers: {
-      "Content-Type": contentType,
+      ...objectResponseHeaders(contentType),
       "Cache-Control": "public, max-age=2592000, immutable",
       "Access-Control-Allow-Origin": "*",
     },
@@ -50,6 +56,13 @@ export async function GET(
   ctx: { params: Promise<{ bucket: string; path: string[] }> }
 ): Promise<Response> {
   const { bucket, path: segments } = await ctx.params;
+  // Private buckets are only reachable through signed URLs.
+  if (!PUBLIC_BUCKETS.has(bucket)) {
+    return new Response(JSON.stringify({ error: "Object not found" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   const objectPath = segments.map(decodeURIComponent).join("/");
   const { searchParams } = new URL(req.url);
   const width = pickWidth(searchParams.get("width"));

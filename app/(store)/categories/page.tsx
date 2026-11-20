@@ -33,6 +33,7 @@ export default async function CategoriesPage() {
       .eq('status', 'active'),
   ]);
 
+  const loadFailed = !!categoriesRes.error;
   const allCategories = categoriesRes.data || [];
   const allProducts = productsRes.data || [];
 
@@ -253,10 +254,25 @@ export default async function CategoriesPage() {
           ) : (
             <div className="text-center py-32 bg-gray-50 rounded-3xl border border-dashed border-gray-200">
               <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
-                <i className="ri-store-2-line text-4xl text-gray-300" />
+                <i className="ri-store-2-line text-4xl text-gray-300" aria-hidden="true" />
               </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">No collections yet</h3>
-              <p className="text-gray-500">Check back soon for new arrivals.</p>
+              {loadFailed ? (
+                <>
+                  <h3 className="text-xl font-bold text-gray-900 mb-2">Couldn&apos;t load collections</h3>
+                  <p className="text-gray-500 mb-6">Please try again in a moment.</p>
+                  <a
+                    href="/categories"
+                    className="inline-flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-full font-bold text-sm hover:bg-[#0F1A47] transition-all"
+                  >
+                    Try again
+                  </a>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-xl font-bold text-gray-900 mb-2">No collections yet</h3>
+                  <p className="text-gray-500">Check back soon for new arrivals.</p>
+                </>
+              )}
             </div>
           )}
         </div>

@@ -21,11 +21,19 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
     const [price, setPrice] = useState(initialData?.price || '');
     const [comparePrice, setComparePrice] = useState(initialData?.compare_at_price || '');
     const [sku, setSku] = useState(initialData?.sku || '');
-    const [stock, setStock] = useState(initialData?.quantity || '');
+    // Stock as loaded; edit mode writes quantity only when the field was changed,
+    // so sales made while the form was open are not overwritten.
+    const initialStockValue = String(initialData?.quantity ?? '');
+    const [stock, setStock] = useState<string>(initialStockValue);
     const [moq, setMoq] = useState(initialData?.moq || '1');
     const [lowStockThreshold, setLowStockThreshold] = useState(initialData?.metadata?.low_stock_threshold || '5');
     const [description, setDescription] = useState(initialData?.description || '');
-    const [status, setStatus] = useState(initialData?.status || 'Active');
+    // Database values are lowercase ('active' | 'draft' | 'archived').
+    const [status, setStatus] = useState<string>(() => {
+        const s = String(initialData?.status || 'active').toLowerCase();
+        return ['active', 'draft', 'archived'].includes(s) ? s : 'active';
+    });
+    const [formError, setFormError] = useState('');
     const [featured, setFeatured] = useState(initialData?.featured || false);
     const [preorderShipping, setPreorderShipping] = useState(initialData?.metadata?.preorder_shipping || '');
     const [isPreorder, setIsPreorder] = useState<boolean>(
@@ -233,6 +241,16 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
         return data;
     });
 
+    // Variant rows whose stock the admin changed in this form (keyed like variantData).
+    const [touchedStockKeys, setTouchedStockKeys] = useState<Set<string>>(() => new Set());
+    const markStockTouched = (keys: string[]) => {
+        setTouchedStockKeys(prev => {
+            const next = new Set(prev);
+            keys.forEach(k => next.add(k));
+            return next;
+        });
+    };
+
     const cartesian = (arrays: string[][]): string[][] => {
         if (arrays.length === 0) return [[]];
         const [first, ...rest] = arrays;
@@ -249,10 +267,11 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
 
     const variants = variantCombinations.map(combo => {
         const d = variantData[combo.key] || { price: price?.toString() || '', stock: '0', sku: '' };
-        return { values: combo.values, sku: d.sku, price: d.price || price?.toString() || '', stock: d.stock || '0' };
+        return { key: combo.key, values: combo.values, sku: d.sku, price: d.price || price?.toString() || '', stock: d.stock || '0' };
     });
 
     const updateVariantField = (key: string, field: string, value: string) => {
+        if (field === 'stock') markStockTouched([key]);
         setVariantData(prev => ({
             ...prev,
             [key]: { ...prev[key] || { price: price?.toString() || '', stock: '0', sku: '' }, [field]: value },
@@ -260,6 +279,7 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
     };
 
     const bulkSetField = (field: 'price' | 'stock', value: string) => {
+        if (field === 'stock') markStockTouched(variantCombinations.map(c => c.key));
         setVariantData(prev => {
             const updated = { ...prev };
             variantCombinations.forEach(combo => {
@@ -270,7 +290,9 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
     };
 
     // Images
-    const [images, setImages] = useState<any[]>(initialData?.product_images || []);
+    const [images, setImages] = useState<any[]>(() =>
+        [...(initialData?.product_images || [])].sort((a: any, b: any) => (Number(a.position) || 0) - (Number(b.position) || 0))
+    );
     const [uploading, setUploading] = useState(false);
 
     // SEO
@@ -353,125 +375,290 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
 
     // Variant helpers removed — variants are now auto-generated from selectedColors × selectedSizes
 
+    const validateForm = (): string | null => {
+        const name = productName.trim();
+        if (!name) return 'Enter a product name.';
+        const priceNum = Number(price);
+        if (price === '' || !Number.isFinite(priceNum) || priceNum < 0) return 'Enter a valid price (GH₵).';
+        if (status === 'active' && priceNum <= 0) {
+            return 'An active product must have a price above GH₵0. Set a price, or save it as Draft.';
+        }
+        if (comparePrice !== '' && comparePrice !== null && !Number.isFinite(Number(comparePrice))) {
+            return 'Compare-at price must be a number (or leave it empty).';
+        }
+        const slug = (urlSlug || name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+        if (!slug) return 'Enter a URL slug (letters or numbers).';
+        if (variants.length === 0) {
+            if (stock !== '' && (!Number.isFinite(Number(stock)) || Number(stock) < 0)) return 'Stock cannot be negative.';
+        } else {
+            for (const v of variants) {
+                const label = v.values.join(' / ') || 'Default';
+                const vp = Number(v.price);
+                if (!Number.isFinite(vp) || vp < 0) return `Variant "${label}" has an invalid price.`;
+                if (status === 'active' && vp <= 0) return `Variant "${label}" needs a price above GH₵0 for an active product.`;
+                if (!Number.isFinite(Number(v.stock)) || Number(v.stock) < 0) return `Variant "${label}" has invalid stock.`;
+            }
+        }
+        if (activeGroups.length > 3) return 'At most 3 option groups can create variants.';
+        return null;
+    };
+
     const handleSubmit = async () => {
+        if (loading) return;
+        const problem = validateForm();
+        if (problem) {
+            setFormError(problem);
+            alert(problem);
+            return;
+        }
+        setFormError('');
+        const notices: string[] = [];
+        let createdId: string | null = null;
         try {
             setLoading(true);
 
-            // If product has variants, auto-sync main stock = sum of variant stocks
             const hasVariants = variants.length > 0;
-            const variantStockTotal = hasVariants
-                ? variants.reduce((sum, v) => sum + (parseInt(v.stock) || 0), 0)
-                : parseInt(stock) || 0;
+            const initiallyHadVariants = (initialData?.product_variants || []).length > 0;
+            const variantStockTotal = variants.reduce((sum, v) => sum + (parseInt(v.stock) || 0), 0);
+
+            // Re-read metadata right before saving: payment callbacks, the till or other
+            // tools may have written keys since the form opened. Only our keys change.
+            let currentMetadata: Record<string, any> = initialData?.metadata || {};
+            if (isEditMode && initialData?.id) {
+                const { data: fresh, error: freshError } = await supabase
+                    .from('products')
+                    .select('metadata')
+                    .eq('id', initialData.id)
+                    .maybeSingle();
+                if (freshError) throw new Error('Could not re-read the product before saving: ' + freshError.message);
+                if (!fresh) throw new Error('This product no longer exists or you cannot edit it.');
+                currentMetadata = (fresh.metadata && typeof fresh.metadata === 'object') ? fresh.metadata : {};
+            }
+
+            const thresholdNum = parseInt(lowStockThreshold);
+            const metadata: Record<string, any> = {
+                ...currentMetadata,
+                low_stock_threshold: Number.isFinite(thresholdNum) && thresholdNum >= 0 ? thresholdNum : 5,
+                is_preorder: isPreorder,
+                preorder_shipping: isPreorder ? (preorderShipping.trim() || null) : null,
+                option_names: activeGroups.map((g, i) => g.name || `Option ${i + 1}`),
+                product_options: Object.fromEntries(
+                    enabledDefaults.map(d => [d.key, {
+                        // Persist the label alongside the values so the
+                        // customer page doesn't have to look it up from
+                        // a parallel map. See lib/product-options.ts.
+                        label: d.label,
+                        values: optionGroupStates[d.key].values,
+                        generatesVariants: optionGroupStates[d.key].generatesVariants,
+                    }])
+                ),
+                custom_option_groups: customGroups.filter(g => g.values.length > 0),
+            };
+
+            // Stock: new products always; edits only when the stock field was changed
+            // (variant products get their total re-summed from the variants after sync).
+            const stockFields: Record<string, number> = !isEditMode
+                ? { quantity: hasVariants ? variantStockTotal : (parseInt(stock) || 0) }
+                : !hasVariants && (String(stock) !== initialStockValue || initiallyHadVariants)
+                    ? { quantity: parseInt(stock) || 0 }
+                    : {};
 
             const productData = {
-                name: productName,
-                slug: urlSlug || productName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, ''),
+                name: productName.trim(),
+                slug: urlSlug || productName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, ''),
                 description,
                 category_id: categoryId || null,
-                price: parseFloat(price) || 0,
-                compare_at_price: comparePrice ? parseFloat(comparePrice) : null,
+                price: Number(price) || 0,
+                compare_at_price: comparePrice !== '' && comparePrice !== null ? Number(comparePrice) : null,
                 sku: sku || generateSku(), // Auto-generate if empty
-                quantity: hasVariants ? variantStockTotal : (parseInt(stock) || 0),
+                ...stockFields,
                 moq: parseInt(moq) || 1,
-                status: status.toLowerCase(),
+                status,
                 featured,
                 seo_title: seoTitle,
                 seo_description: metaDescription,
                 tags: (keywords as string).split(',').map((k: string) => k.trim()).filter(Boolean),
-                metadata: {
-                    low_stock_threshold: parseInt(lowStockThreshold) || 5,
-                    is_preorder: isPreorder,
-                    preorder_shipping: isPreorder ? (preorderShipping.trim() || null) : null,
-                    option_names: activeGroups.map((g, i) => g.name || `Option ${i + 1}`),
-                    product_options: Object.fromEntries(
-                        enabledDefaults.map(d => [d.key, {
-                            // Persist the label alongside the values so the
-                            // customer page doesn't have to look it up from
-                            // a parallel map. See lib/product-options.ts.
-                            label: d.label,
-                            values: optionGroupStates[d.key].values,
-                            generatesVariants: optionGroupStates[d.key].generatesVariants,
-                        }])
-                    ),
-                    custom_option_groups: customGroups.filter(g => g.values.length > 0),
-                }
+                metadata,
             };
 
             let productId = initialData?.id;
-            let error;
 
             if (isEditMode && productId) {
-                // Update existing
-                const { error: updateError } = await supabase
+                const { data: saved, error: updateError } = await supabase
                     .from('products')
                     .update(productData)
-                    .eq('id', productId);
-                error = updateError;
+                    .eq('id', productId)
+                    .select('id')
+                    .maybeSingle();
+                if (updateError) throw new Error('Could not save the product: ' + updateError.message);
+                if (!saved) throw new Error('The product was not saved. Sign in with a staff account and try again.');
             } else {
-                // Create new
                 const { data: newProduct, error: insertError } = await supabase
                     .from('products')
                     .insert([productData])
-                    .select()
+                    .select('id')
                     .single();
-
-                if (newProduct) productId = newProduct.id;
-                error = insertError;
+                if (insertError) throw new Error('Could not create the product: ' + insertError.message);
+                if (!newProduct) throw new Error('The product was not created.');
+                productId = newProduct.id;
+                createdId = newProduct.id;
             }
 
-            if (error) throw error;
-
-            // Update Images
-            if (productId) {
-                // Strategy: We will just delete all old images/variants and recreate them for simplicity in this MVP.
-                // In a clearer implementation, we would diff them.
-
-                // 1. Images
+            // ── Images: insert new, re-order kept, delete removed (in that order, so a
+            // failure part-way never leaves the product without its images). ──
+            {
+                let existingImages: any[] = [];
                 if (isEditMode) {
-                    await supabase.from('product_images').delete().eq('product_id', productId);
+                    const { data, error } = await supabase
+                        .from('product_images')
+                        .select('id, url, position')
+                        .eq('product_id', productId);
+                    if (error) throw new Error('Product saved, but its images could not be read: ' + error.message);
+                    existingImages = data || [];
                 }
-                if (images.length > 0) {
-                    const imageInserts = images.map((img, idx) => ({
-                        product_id: productId,
-                        url: img.url,
-                        position: idx,
-                        alt_text: productName
-                    }));
-                    await supabase.from('product_images').insert(imageInserts);
+                const existingById = new Map(existingImages.map((img: any) => [img.id, img]));
+                const keptIds = new Set<string>();
+
+                const toInsert = images
+                    .map((img, idx) => ({ img, idx }))
+                    .filter(({ img }) => !img.id || !existingById.has(img.id));
+                if (toInsert.length > 0) {
+                    const { error } = await supabase.from('product_images').insert(
+                        toInsert.map(({ img, idx }) => ({
+                            product_id: productId,
+                            url: img.url,
+                            position: idx,
+                            alt_text: img.alt_text || productName.trim(),
+                        }))
+                    );
+                    if (error) throw new Error('Product saved, but new images were not added: ' + error.message + '. Your existing images were kept.');
                 }
 
-                // 2. Variants
+                for (const [idx, img] of images.entries()) {
+                    if (!img.id || !existingById.has(img.id)) continue;
+                    keptIds.add(img.id);
+                    if (Number(existingById.get(img.id).position) !== idx) {
+                        const { error } = await supabase
+                            .from('product_images')
+                            .update({ position: idx })
+                            .eq('id', img.id);
+                        if (error) throw new Error('Product saved, but the image order was not saved: ' + error.message);
+                    }
+                }
+
+                const removedImageIds = existingImages.map((img: any) => img.id).filter((id: string) => !keptIds.has(id));
+                if (removedImageIds.length > 0) {
+                    const { error } = await supabase.from('product_images').delete().in('id', removedImageIds);
+                    if (error) throw new Error('Product saved, but removed images could not be deleted: ' + error.message);
+                }
+            }
+
+            // ── Variants: update existing by id, insert new, delete only removed
+            // variants that no order references. ──
+            {
+                type DbVariant = { id: string; option1: string | null; option2: string | null; option3: string | null; name: string; quantity: number | null; metadata: any };
+                let dbVariants: DbVariant[] = [];
                 if (isEditMode) {
-                    // Be careful not to delete ALL variants if we want to preserve IDs etc, 
-                    // but for now, full replacement is safer to ensure sync.
-                    // Note: This might break order-item references if they rely on variant_id hard constraints without cascading.
-                    // Our Schema migration has ON DELETE SET NULL for order_items -> variant_id, so this is safe for now (but distinct from "archiving").
-                    await supabase.from('product_variants').delete().eq('product_id', productId);
+                    const { data, error } = await supabase
+                        .from('product_variants')
+                        .select('id, name, option1, option2, option3, quantity, metadata')
+                        .eq('product_id', productId)
+                        .order('created_at', { ascending: true });
+                    if (error) throw new Error('Product saved, but its variants could not be read: ' + error.message);
+                    dbVariants = (data || []) as DbVariant[];
                 }
 
-                if (variants.length > 0) {
-                    const variantInserts = variants.map(v => ({
-                        product_id: productId,
+                const keyOf = (v: DbVariant) => [v.option1, v.option2, v.option3].filter(Boolean).join('|||');
+                const dbByKey = new Map<string, DbVariant>();
+                dbVariants.forEach(v => {
+                    const k = keyOf(v);
+                    if (k && !dbByKey.has(k)) dbByKey.set(k, v);
+                });
+
+                const matchedIds = new Set<string>();
+                const inserts: any[] = [];
+                for (const v of variants) {
+                    const existing = dbByKey.get(v.key);
+                    const fields: Record<string, any> = {
                         name: v.values.join(' / ') || 'Default',
                         sku: v.sku || null,
-                        price: parseFloat(v.price) || 0,
-                        quantity: parseInt(v.stock) || 0,
+                        price: Number(v.price) || 0,
                         option1: v.values[0] || null,
                         option2: v.values[1] || null,
                         option3: v.values[2] || null,
-                        metadata: {},
-                    }));
-                    const { error: varError } = await supabase.from('product_variants').insert(variantInserts);
-                    if (varError) throw varError;
+                    };
+                    if (existing) {
+                        matchedIds.add(existing.id);
+                        // Only write stock the admin changed here.
+                        if (touchedStockKeys.has(v.key)) fields.quantity = parseInt(v.stock) || 0;
+                        const { error } = await supabase
+                            .from('product_variants')
+                            .update(fields)
+                            .eq('id', existing.id);
+                        if (error) throw new Error(`Product saved, but variant "${fields.name}" was not updated: ${error.message}`);
+                    } else {
+                        inserts.push({ ...fields, product_id: productId, quantity: parseInt(v.stock) || 0, metadata: {} });
+                    }
+                }
+
+                if (inserts.length > 0) {
+                    const { error } = await supabase.from('product_variants').insert(inserts);
+                    if (error) throw new Error('Product saved, but new variants were not added: ' + error.message);
+                }
+
+                const removed = dbVariants.filter(v => !matchedIds.has(v.id));
+                if (removed.length > 0) {
+                    const removedIds = removed.map(v => v.id);
+                    const { data: refs, error: refsError } = await supabase
+                        .from('order_items')
+                        .select('variant_id')
+                        .in('variant_id', removedIds);
+                    if (refsError) throw new Error('Product saved, but removed variants could not be checked against orders: ' + refsError.message);
+                    const referenced = new Set((refs || []).map((r: any) => r.variant_id));
+                    const kept: string[] = [];
+                    for (const v of removed) {
+                        if (referenced.has(v.id)) {
+                            kept.push(v.name || keyOf(v));
+                            continue;
+                        }
+                        const { error } = await supabase.from('product_variants').delete().eq('id', v.id);
+                        if (error) kept.push(v.name || keyOf(v));
+                    }
+                    if (kept.length > 0) {
+                        notices.push(
+                            `${kept.length} removed variant${kept.length === 1 ? ' was' : 's were'} kept because past orders or carts use ${kept.length === 1 ? 'it' : 'them'}: ${kept.join(', ')}. ` +
+                            'To stop selling one, add its option back and set its stock to 0.'
+                        );
+                    }
+                }
+
+                // Variant products: product stock = sum of the variants as stored now.
+                if (hasVariants) {
+                    const { data: current, error } = await supabase
+                        .from('product_variants')
+                        .select('quantity')
+                        .eq('product_id', productId);
+                    if (error) throw new Error('Product saved, but its total stock could not be recalculated: ' + error.message);
+                    const total = (current || []).reduce((sum: number, r: any) => sum + (Number(r.quantity) || 0), 0);
+                    const { error: qtyError } = await supabase.from('products').update({ quantity: total }).eq('id', productId);
+                    if (qtyError) throw new Error('Product saved, but its total stock was not updated: ' + qtyError.message);
                 }
             }
 
-            alert(isEditMode ? 'Product updated successfully!' : 'Product created successfully!');
+            alert((isEditMode ? 'Product updated.' : 'Product created.') + (notices.length ? '\n\n' + notices.join('\n\n') : ''));
             router.push('/admin/products');
 
         } catch (err: any) {
             console.error('Error saving product:', err);
-            alert(`Error: ${err.message}`);
+            const message = err?.message || 'Unknown error';
+            setFormError(message);
+            if (createdId) {
+                // The product row exists; continue in the edit form so a retry does not create a duplicate.
+                alert(`The product was created, but not everything was saved: ${message}\n\nOpening it for editing so you can finish.`);
+                router.push(`/admin/products/${createdId}`);
+            } else {
+                alert(`Error: ${message}`);
+            }
         } finally {
             setLoading(false);
         }
@@ -527,6 +714,13 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
                     </button>
                 </div>
             </div>
+
+            {formError && (
+                <div role="alert" className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-start gap-2">
+                    <i className="ri-error-warning-line text-lg leading-none"></i>
+                    <span>{formError}</span>
+                </div>
+            )}
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div className="border-b border-gray-200 overflow-x-auto">
@@ -605,9 +799,9 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
                                         onChange={(e) => setStatus(e.target.value)}
                                         className="w-full px-4 py-3 pr-8 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-gray-600 cursor-pointer"
                                     >
-                                        <option>Active</option>
-                                        <option>Draft</option>
-                                        <option>Archived</option>
+                                        <option value="active">Active (shown in shop)</option>
+                                        <option value="draft">Draft (hidden)</option>
+                                        <option value="archived">Archived (hidden)</option>
                                     </select>
                                 </div>
                             </div>

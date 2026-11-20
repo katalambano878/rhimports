@@ -1,156 +1,100 @@
-'use client';
-
-import { useState } from 'react';
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import Header from '@/components/Header';
-import Footer from '@/components/Footer';
-import { sanitizeHtml } from '@/lib/sanitize';
-import { useCMS } from '@/context/CMSContext';
-import { getArticles, relatedArticles } from './help-articles-data';
+import { notFound } from 'next/navigation';
+import { HELP_ARTICLES, HELP_CATEGORIES, STORE_PHONE, STORE_PHONE_TEL, getHelpArticle } from '../../articles';
 
-export default function ArticlePage() {
-  const params = useParams();
-  const { getSetting } = useCMS();
-  const contactEmail = getSetting('contact_email') || '';
-  const contactPhone = getSetting('contact_phone') || '';
-  const articles = getArticles(contactPhone, contactEmail);
-  const articleId = params?.id as string | undefined;
-  const article = (articleId && articles[articleId as keyof typeof articles]) || articles['1'];
+export function generateStaticParams() {
+  return HELP_ARTICLES.map((a) => ({ id: a.id }));
+}
 
-  const [wasHelpful, setWasHelpful] = useState<boolean | null>(null);
-  const [showFeedback, setShowFeedback] = useState(false);
+export const dynamicParams = false;
 
-  const handleHelpful = (helpful: boolean) => {
-    setWasHelpful(helpful);
-    setShowFeedback(true);
-  };
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const { id } = await params;
+  const article = getHelpArticle(id);
+  return article
+    ? { title: article.title, description: article.summary, alternates: { canonical: `/help/article/${article.id}` } }
+    : { title: 'Help' };
+}
+
+export default async function HelpArticlePage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const article = getHelpArticle(id);
+  if (!article) notFound();
+
+  const category = HELP_CATEGORIES.find((c) => c.id === article.category);
+  const related = HELP_ARTICLES.filter((a) => a.category === article.category && a.id !== article.id);
 
   return (
-    <>
-      <Header />
-      <main className="min-h-screen bg-gray-50 py-12">
-        <div className="max-w-4xl mx-auto px-4">
-          <Link
-            href="/help"
-            className="inline-flex items-center text-gray-700 hover:text-gray-900 font-semibold mb-6 whitespace-nowrap"
-          >
-            <i className="ri-arrow-left-line mr-2"></i>
-            Back to Help Center
-          </Link>
+    <main className="min-h-screen bg-gray-50 py-12">
+      <div className="max-w-4xl mx-auto px-4">
+        <nav aria-label="Breadcrumb" className="mb-6 text-sm text-gray-600">
+          <ol className="flex flex-wrap items-center gap-2">
+            <li><Link href="/help" className="text-primary hover:text-primary-dark font-semibold">Help Centre</Link></li>
+            <li aria-hidden="true">/</li>
+            <li>{category?.title}</li>
+          </ol>
+        </nav>
 
-          <div className="bg-white rounded-xl shadow-sm p-8 mb-6">
-            <div className="mb-6 pb-6 border-b border-gray-200">
-              <div className="flex items-center space-x-3 mb-4">
-                <span className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm font-semibold whitespace-nowrap">
-                  {article.category}
-                </span>
-                <span className="text-sm text-gray-500">
-                  Updated {article.updated}
-                </span>
-              </div>
-              <h1 className="text-3xl font-bold text-gray-900 mb-4">{article.title}</h1>
-              <div className="flex items-center space-x-6 text-sm text-gray-600">
-                <div className="flex items-center space-x-2">
-                  <i className="ri-eye-line"></i>
-                  <span>{article.views.toLocaleString()} views</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <i className="ri-thumb-up-line"></i>
-                  <span>{article.helpful} found this helpful</span>
-                </div>
-              </div>
-            </div>
+        <article className="bg-white rounded-xl shadow-sm p-6 sm:p-8 mb-8">
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-3">{article.title}</h1>
+          <p className="text-lg text-gray-600 mb-8">{article.summary}</p>
 
-            <article
-              className="prose prose-gray max-w-none"
-              dangerouslySetInnerHTML={{ __html: sanitizeHtml(article.content) }}
-              style={{
-                lineHeight: '1.8'
-              }}
-            />
-          </div>
-
-          <div className="bg-white rounded-xl shadow-sm p-8 mb-6">
-            <h3 className="text-xl font-bold text-gray-900 mb-4">Was this article helpful?</h3>
-            {!showFeedback ? (
-              <div className="flex space-x-4">
-                <button
-                  onClick={() => handleHelpful(true)}
-                  className="flex-1 py-3 px-6 border-2 border-primary text-primary hover:bg-primary hover:text-white rounded-lg font-semibold transition-colors whitespace-nowrap"
-                >
-                  <i className="ri-thumb-up-line mr-2"></i>
-                  Yes, it was helpful
-                </button>
-                <button
-                  onClick={() => handleHelpful(false)}
-                  className="flex-1 py-3 px-6 border-2 border-gray-300 text-gray-700 hover:bg-gray-100 rounded-lg font-semibold transition-colors whitespace-nowrap"
-                >
-                  <i className="ri-thumb-down-line mr-2"></i>
-                  No, I need more help
-                </button>
-              </div>
-            ) : (
-              <div className="text-center">
-                {wasHelpful ? (
-                  <>
-                    <div className="w-16 h-16 flex items-center justify-center bg-gray-100 rounded-full mx-auto mb-4">
-                      <i className="ri-check-line text-3xl text-gray-700"></i>
-                    </div>
-                    <p className="text-lg font-semibold text-gray-900 mb-2">
-                      Thank you for your feedback!
-                    </p>
-                    <p className="text-gray-600">
-                      We're glad we could help. Have a great day!
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-16 h-16 flex items-center justify-center bg-blue-100 rounded-full mx-auto mb-4">
-                      <i className="ri-customer-service-line text-3xl text-blue-700"></i>
-                    </div>
-                    <p className="text-lg font-semibold text-gray-900 mb-2">
-                      Sorry we couldn't help
-                    </p>
-                    <p className="text-gray-600 mb-4">
-                      Our support team is here for you!
-                    </p>
-                    <Link
-                      href="/support/ticket"
-                      className="inline-block bg-primary hover:bg-primary-dark text-white px-6 py-3 rounded-lg font-semibold transition-colors whitespace-nowrap"
-                    >
-                      Contact Support
-                    </Link>
-                  </>
+          <div className="space-y-6 text-gray-700 leading-relaxed">
+            {article.sections.map((section, i) => (
+              <section key={i}>
+                {section.heading && <h2 className="text-lg font-bold text-gray-900 mb-2">{section.heading}</h2>}
+                {section.paragraphs?.map((p, j) => (
+                  <p key={j} className="mb-3">{p}</p>
+                ))}
+                {section.list && (
+                  <ul className="list-disc pl-6 space-y-2">
+                    {section.list.map((item, j) => <li key={j}>{item}</li>)}
+                  </ul>
                 )}
-              </div>
-            )}
+              </section>
+            ))}
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm p-8">
-            <h3 className="text-xl font-bold text-gray-900 mb-6">Related Articles</h3>
-            <div className="space-y-3">
-              {relatedArticles.map((related) => (
+          {article.links && article.links.length > 0 && (
+            <div className="mt-8 flex flex-wrap gap-3">
+              {article.links.map((link) => (
                 <Link
-                  key={related.id}
-                  href={`/help/article/${related.id}`}
-                  className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-lg transition-colors"
+                  key={link.href}
+                  href={link.href}
+                  className="inline-flex items-center gap-2 bg-primary hover:bg-primary-dark text-white px-5 py-3 rounded-lg font-semibold transition-colors"
                 >
-                  <div className="flex items-center space-x-3">
-                    <i className="ri-file-text-line text-xl text-gray-700"></i>
-                    <div>
-                      <p className="font-semibold text-gray-900">{related.title}</p>
-                      <p className="text-sm text-gray-600">{related.category}</p>
-                    </div>
-                  </div>
-                  <i className="ri-arrow-right-s-line text-2xl text-gray-400"></i>
+                  {link.label}
+                  <i className="ri-arrow-right-line" aria-hidden="true"></i>
                 </Link>
               ))}
             </div>
-          </div>
+          )}
+        </article>
+
+        {related.length > 0 && (
+          <section aria-labelledby="related-help" className="bg-white rounded-xl shadow-sm p-6 sm:p-8 mb-8">
+            <h2 id="related-help" className="text-xl font-bold text-gray-900 mb-4">More about {category?.title.toLowerCase()}</h2>
+            <ul className="space-y-2">
+              {related.map((a) => (
+                <li key={a.id}>
+                  <Link href={`/help/article/${a.id}`} className="text-primary hover:text-primary-dark font-medium">
+                    {a.title}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <div className="bg-primary-soft border border-primary/20 rounded-xl p-6 text-center">
+          <p className="font-semibold text-gray-900 mb-2">Did not find your answer?</p>
+          <p className="text-gray-700 mb-4">Call or WhatsApp us on <a href={`tel:${STORE_PHONE_TEL}`} className="font-semibold text-primary underline">{STORE_PHONE}</a>, or send us a message.</p>
+          <Link href="/contact" className="inline-block bg-primary hover:bg-primary-dark text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+            Contact us
+          </Link>
         </div>
-      </main>
-      <Footer />
-    </>
+      </div>
+    </main>
   );
 }

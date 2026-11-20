@@ -29,7 +29,7 @@ interface SEOProps {
 
 export function generateMetadata({
   title,
-  description = `${SITE_NAME} — YOUR_SITE_DESCRIPTION.`,
+  description = `${SITE_NAME}: electronics and gadgets imported for customers in Ghana.`,
   keywords = [],
   ogImage = DEFAULT_OG,
   ogImageAlt,
@@ -51,7 +51,7 @@ export function generateMetadata({
       images: [{ url: ogImage, width: 1200, height: 630, alt: ogImageAlt || pageTitle, type: 'image/png' }],
       type: ogType as any,
       siteName: SITE_NAME,
-      locale: 'en',
+      locale: 'en_GH',
       url: canonicalUrl,
     },
     twitter: {
@@ -90,19 +90,22 @@ export function generateProductSchema(product: {
     description: product.description,
     image: product.image,
     sku: product.sku,
-    brand: { '@type': 'Brand', name: product.brand || SITE_NAME },
+    ...(product.brand ? { brand: { '@type': 'Brand', name: product.brand } } : {}),
     offers: {
       '@type': 'Offer',
       price: product.price,
-      priceCurrency: product.currency || 'USD',
-      availability: product.availability === 'in_stock' ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+      priceCurrency: product.currency || 'GHS',
+      availability:
+        product.availability === 'preorder'
+          ? 'https://schema.org/PreOrder'
+          : product.availability === 'in_stock'
+            ? 'https://schema.org/InStock'
+            : 'https://schema.org/OutOfStock',
       url: typeof window !== 'undefined' ? window.location.href : SITE_URL,
       seller: { '@type': 'Organization', name: SITE_NAME },
-      priceValidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       shippingDetails: {
         '@type': 'OfferShippingDetails',
-        shippingRate: { '@type': 'MonetaryAmount', currency: product.currency || 'USD' },
-        shippingDestination: { '@type': 'DefinedRegion', addressCountry: 'US' },
+        shippingDestination: { '@type': 'DefinedRegion', addressCountry: 'GH' },
       },
     },
     ...(product.rating && product.reviewCount ? {
@@ -161,12 +164,24 @@ export function generateItemListSchema(items: { name: string; url: string; image
   };
 }
 
+/**
+ * Serialize data for a <script type="application/ld+json"> tag.
+ * `<` is escaped so text such as "</script>" in a product name or URL can
+ * never close the tag and run as HTML.
+ */
+export function serializeJsonLd(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
 /** Inline JSON-LD script component */
 export function StructuredData({ data }: { data: object }) {
   return (
     <script
       type="application/ld+json"
-      dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }}
+      dangerouslySetInnerHTML={{ __html: serializeJsonLd(data) }}
     />
   );
 }

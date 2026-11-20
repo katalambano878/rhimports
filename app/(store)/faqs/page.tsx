@@ -27,117 +27,102 @@ export default function FAQsPage() {
     {
       category: 'orders',
       question: 'How do I place an order?',
-      answer: 'Browse our products, add items to your cart, proceed to checkout, provide your delivery address, select payment method, and confirm your order. You\'ll receive an email confirmation with your order details and tracking number.'
+      answer: 'Browse our products, add items to your cart, go to checkout, enter your delivery details and pay online. You get an order number after payment. Keep it: you need it to track the order or ask about it.'
+    },
+    {
+      category: 'orders',
+      question: 'What is a preorder, and how long does it take?',
+      answer: 'Most of our products are preorders. When you order and pay, we buy the item from one of our verified suppliers abroad and ship it to Ghana for you. Please allow 45–60 days from the day you order for the item to reach you.'
     },
     {
       category: 'orders',
       question: 'Can I modify or cancel my order?',
-      answer: 'You can modify or cancel your order within 1 hour of placing it. Contact customer service via the contact page. Once an order is processed, modifications may not be possible.'
+      answer: `Contact us as soon as possible on WhatsApp ${contactPhone} with your order number. Because preorder items are bought from our suppliers after you order, we may not be able to change or cancel an order once it has been placed with the supplier. We will tell you what is possible.`
     },
     {
       category: 'orders',
       question: 'How do I track my order?',
-      answer: 'After your order ships, you\'ll receive a tracking number via email and SMS. Visit our Order Tracking page and enter your order number and email address to see real-time updates on your delivery status.'
+      answer: 'Open the Track Order page and enter your order number with the contact details you used at checkout to see the current status. If you have an account, the orders you placed while signed in are also listed under My Account → Orders.'
     },
     {
       category: 'orders',
       question: 'What if I receive the wrong or a defective item?',
-      answer: 'We sincerely apologise if this happens. Contact us within 48 hours with photos or a short video showing the issue. We will arrange for the correct item to be sent or a full refund to be processed — at no extra cost to you.'
+      answer: 'We sincerely apologise if this happens. Contact us within 48 hours of delivery with photos or a short video showing the issue, or start a request on the Returns page. We will review it and arrange a replacement or a refund.'
     },
     {
       category: 'orders',
       question: 'Are your products genuine?',
-      answer: 'Yes. All products sold by RNH Imports are genuine, sourced directly from verified manufacturers and suppliers. We do not sell counterfeits. If you ever have concerns about a product\'s authenticity, contact us immediately and we will resolve it.'
+      answer: 'Yes. All products sold by RNH Imports are genuine, sourced from verified suppliers. We do not sell counterfeits. If you ever have concerns about a product\'s authenticity, contact us immediately and we will resolve it.'
     },
     {
       category: 'shipping',
       question: 'What are your delivery times?',
-      answer: 'Delivery within Accra and nearby areas typically takes 1–3 business days after your order is confirmed. Remote areas outside Greater Accra may take longer. You can also walk in and collect from our Amasaman Achiaman, Annosel Junction location during business hours.'
+      answer: 'Preorder items are delivered 45–60 days after the order. When your order is ready, our team contacts you to arrange delivery to your door.'
     },
     {
       category: 'shipping',
-      question: 'How much does shipping cost?',
-      answer: 'Delivery rates vary by location. Within Accra: GH₵ 50. Tema / Ashiaman: GH₵ 100. Pokuase / Amasaman area: GH₵ 80. Large or heavy packages: GH₵ 100 and above. See our full Shipping page for details.'
+      question: 'How much does delivery cost?',
+      answer: 'Delivery is to your door and is not included in the amount you pay online. The cost depends on your location and the size of the package. Our team contacts you with the delivery cost before delivery. See our Shipping page for guide prices.'
     },
     {
       category: 'shipping',
-      question: 'Can I pick up my order in person?',
-      answer: 'Yes — walk-ins are welcome. We are located at Amasaman Achiaman, Annosel Junction, Accra. Open Mon – Fri: 9am – 6pm and Saturday: 10am – 4pm. Call or WhatsApp 024 220 5331 before coming to confirm stock availability.'
-    },
-    {
-      category: 'shipping',
-      question: 'What if nobody is home for delivery?',
-      answer: 'Our delivery partner will attempt delivery twice. If unsuccessful, the package will be held at the nearest collection point for 5 days. You\'ll receive SMS and email notifications with collection instructions.'
+      question: 'Where are you located?',
+      answer: `We are at Amasaman Achiaman, Annosel Junction, Accra. Open Mon – Fri: 9am – 6pm and Saturday: 10am – 4pm. Call or WhatsApp ${contactPhone} before visiting.`
     },
     {
       category: 'returns',
       question: 'What is your return policy?',
-      answer: `Please review our Refund Policy page for full return eligibility, process, and timelines. Items should be unworn/unused, with tags and original packaging, and you will need proof of purchase. Contact us first on WhatsApp ${contactPhone} or ${contactEmail} so we can guide you through the approved return process.`
+      answer: `Returns must be started within 7 days of delivery. Items should be unused and in their original condition, with all accessories and original packaging, and you will need proof of purchase. Start a request on the Returns page or contact us on WhatsApp ${contactPhone}${contactEmail ? ` or ${contactEmail}` : ''}. See our Refund Policy for full details.`
     },
     {
       category: 'returns',
       question: 'Which items cannot be returned?',
-      answer: 'We cannot accept returns on items that have been opened, used, or where the original seal/packaging has been broken — unless the item is defective or not as described. Custom orders and software licences are non-returnable. All returns must be approved by us first.'
-    },
-    {
-      category: 'returns',
-      question: 'Who pays for return shipping?',
-      answer: 'If you\'re returning due to a defect or our error, we cover return shipping. For change-of-mind returns, customers may pay return shipping. Free shipping on returns for defective items.'
+      answer: 'We cannot accept returns on items that have been opened, used, or where the original seal or packaging has been broken, unless the item is defective or not as described. Custom or special orders and software licences are non-returnable. All returns must be approved by us first.'
     },
     {
       category: 'returns',
       question: 'Can I exchange an item instead of returning it?',
-      answer: 'Yes. If you received the wrong model or a defective unit, select "Exchange" when initiating your return and we will send the correct item as soon as we receive yours. Contact us on WhatsApp first so we can confirm availability.'
+      answer: 'If you received the wrong model or a faulty unit, start a return and tell us you would like an exchange. Once your return is accepted we will arrange the exchange for the same item. You cannot exchange for a different product.'
     },
     {
       category: 'payment',
       question: 'What payment methods do you accept?',
-      answer: 'We accept major credit and debit cards, digital wallets, and other methods. See checkout for options. All payments are processed securely.'
+      answer: 'All orders are paid online. With Hubtel you can pay with mobile money or a bank card; with Moolre you can pay with mobile money. We do not offer cash on delivery or payment in instalments.'
     },
     {
       category: 'payment',
-      question: 'Is it safe to use my credit card on your site?',
-      answer: 'Absolutely. We use industry-standard SSL encryption and partner with secure, PCI-DSS compliant payment processors. We never store your full card details on our servers.'
-    },
-    {
-      category: 'payment',
-      question: 'Can I pay in instalments?',
-      answer: 'Payment plans may be available for larger purchases. Select "Pay in Instalments" at checkout if available. Configure in Admin → Settings.'
+      question: 'Is it safe to pay on your site?',
+      answer: 'Yes. Payments are handled on the secure pages of our payment providers, Hubtel and Moolre. We never see or store your card details.'
     },
     {
       category: 'payment',
       question: 'When will my payment be charged?',
-      answer: 'For card and mobile money payments, you\'re charged immediately. For Cash on Delivery, you pay when you receive your order. If an item is out of stock, we\'ll refund you within 24 hours.'
+      answer: 'You pay in full when you place the order. Your order is confirmed once the payment provider tells us the payment went through. Delivery is paid separately: our team contacts you with the delivery cost.'
     },
     {
       category: 'payment',
       question: 'How do refunds work?',
-      answer: `If we don’t have the same item you purchased, a full refund will be made. We’ll notify you once we’ve received and inspected your return and whether the refund was approved. If approved, you’re refunded on your original payment method; your bank or card company may take extra time to process it. Contact us on WhatsApp ${contactPhone} or ${contactEmail} for any return questions.`
+      answer: `We review every return. Once we have received and checked the item we tell you whether the refund is approved. Approved refunds are paid back to the payment method you used; your mobile money or card provider may take a few days to show it. Contact us on WhatsApp ${contactPhone} for any refund question.`
     },
     {
       category: 'account',
       question: 'Do I need an account to place an order?',
-      answer: 'No, you can checkout as a guest. However, creating an account lets you track orders, save addresses, view purchase history, manage your wishlist, and receive exclusive offers. It only takes 30 seconds to sign up.'
+      answer: 'No, you can check out as a guest. With an account you can see the orders you place while signed in, save delivery addresses and send support tickets.'
     },
     {
       category: 'account',
       question: 'How do I reset my password?',
-      answer: 'Click "Forgot Password" on the login page, enter your email address, and we\'ll send you a reset link. The link is valid for 1 hour. If you don\'t receive it, check your spam folder or contact support.'
+      answer: 'Click "Forgot password" on the sign-in page, enter your email address, and we\'ll send you a reset link. The link works once and is valid for 1 hour. If you don\'t receive it, check your spam folder or contact us.'
     },
     {
       category: 'account',
-      question: 'Can I have multiple delivery addresses?',
-      answer: 'Yes! You can save multiple delivery addresses in your account. During checkout, simply select the address you want to use or add a new one. This is perfect for sending gifts or alternating between work and home.'
+      question: 'Can I save delivery addresses?',
+      answer: 'Yes. Sign in and open My Account → Addresses to add, edit or delete addresses and choose a default.'
     },
     {
       category: 'account',
       question: 'How do I update my account information?',
-      answer: 'Log in to your account and go to "Account Settings". You can update your name, email, phone number, password, and saved addresses. Changes are saved instantly and you\'ll receive a confirmation email.'
-    },
-    {
-      category: 'account',
-      question: 'What are loyalty points and how do they work?',
-      answer: 'Earn points for every purchase. Points can be redeemed for discounts. Check your account dashboard for your balance and redemption options.'
+      answer: 'Sign in and open My Account. On the Profile tab you can update your name and phone number, and change your password (you will need your current password). Your email address cannot be changed there; contact us if it needs to change.'
     }
   ];
 
@@ -167,6 +152,7 @@ export default function FAQsPage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search for answers..."
+                aria-label="Search frequently asked questions"
                 className="w-full pl-12 pr-4 py-4 border border-gray-300 rounded-full focus:ring-2 focus:ring-gray-600 focus:border-transparent text-sm shadow-lg"
               />
               <i className="ri-search-line absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 text-xl"></i>
@@ -229,7 +215,7 @@ export default function FAQsPage() {
           </div>
           <h2 className="text-3xl font-bold text-white mb-4">Still Have Questions?</h2>
           <p className="text-xl text-gray-100 mb-8 leading-relaxed">
-            Our customer service team is ready to help. Contact us and we'll respond within 24 hours.
+            Our team is ready to help. Contact us and we'll reply during opening hours.
           </p>
           <div className="flex flex-wrap gap-4 justify-center">
             <Link

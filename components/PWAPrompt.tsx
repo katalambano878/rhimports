@@ -55,14 +55,14 @@ export default function PWAPrompt() {
           <i className="ri-smartphone-line text-2xl text-gray-900"></i>
         </div>
         <div className="flex-1">
-          <h3 className="font-bold text-gray-900 mb-2">Install Our App</h3>
+          <h3 className="font-bold text-gray-900 mb-2">Add to Home Screen</h3>
           <p className="text-sm text-gray-600 mb-4">
-            Get a faster experience with offline access and quick checkout. Install our app for the best shopping experience!
+            Add RNH Imports to your home screen to open the shop in one tap. You still need an internet connection to shop.
           </p>
           <div className="flex gap-3">
             <button
               onClick={handleInstall}
-              className="flex-1 bg-primary hover:bg-primary text-white py-2 px-4 rounded-lg font-medium transition-colors whitespace-nowrap"
+              className="flex-1 bg-primary hover:bg-primary-dark text-white py-2 px-4 rounded-lg font-medium transition-colors whitespace-nowrap"
             >
               Install Now
             </button>
@@ -75,10 +75,12 @@ export default function PWAPrompt() {
           </div>
         </div>
         <button
+          type="button"
+          aria-label="Close"
           onClick={handleDismiss}
           className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
         >
-          <i className="ri-close-line"></i>
+          <i className="ri-close-line" aria-hidden="true"></i>
         </button>
       </div>
     </div>

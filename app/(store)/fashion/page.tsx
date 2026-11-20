@@ -8,16 +8,31 @@ import ProductCard, { type ColorVariant, getColorHex } from '@/components/Produc
 import AnimatedSection, { AnimatedGrid } from '@/components/AnimatedSection';
 import { usePageTitle } from '@/hooks/usePageTitle';
 import { FASHION_CATEGORY_SLUG, FASHION_HERO_IMAGE } from '@/lib/fashion';
+import { sellableStock, isPreorderProduct } from '@/context/CartContext';
+
+// Explicit columns: never send cost fields to the browser.
+const PRODUCT_LIST_COLUMNS =
+  'id, name, slug, price, compare_at_price, quantity, track_quantity, continue_selling, moq, featured, ' +
+  'rating_avg, review_count, metadata, brand, vendor, created_at, ' +
+  'product_variants(id, name, price, quantity, option1, option2), product_images(url, position)';
+
+const NO_IMAGE =
+  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M30 65l12-15 10 12 8-9 10 12z%27 fill=%27%23d1d5db%27/%3E%3C/svg%3E";
 
 export default function FashionPage() {
   usePageTitle('Fashion');
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function fetchFashion() {
+      setLoading(true);
+      setLoadError(false);
       try {
-        const { data: initialCategory, error: catError } = await supabase
+        const { data: category, error: catError } = await supabase
           .from('categories')
           .select('id, slug')
           .eq('slug', FASHION_CATEGORY_SLUG)
@@ -25,57 +40,54 @@ export default function FashionPage() {
           .maybeSingle();
 
         if (catError) throw catError;
-
-        let category = initialCategory;
+        // No Fashion category: show the empty state.
         if (!category) {
-          await fetch('/api/storefront/ensure-fashion-category', { method: 'POST' });
-          const retry = await supabase
-            .from('categories')
-            .select('id, slug')
-            .eq('slug', FASHION_CATEGORY_SLUG)
-            .eq('status', 'active')
-            .maybeSingle();
-          if (!retry.data) {
-            setProducts([]);
-            return;
-          }
-          category = retry.data;
+          if (active) setProducts([]);
+          return;
         }
 
-        const { data: children } = await supabase
+        const { data: children, error: childError } = await supabase
           .from('categories')
           .select('id')
           .eq('parent_id', category.id)
           .eq('status', 'active');
+        if (childError) throw childError;
 
-        const categoryIds = [category.id, ...(children || []).map((c) => c.id)];
+        const categoryIds = [category.id, ...(children || []).map((c: { id: string }) => c.id)];
 
         const { data, error } = await supabase
           .from('products')
-          .select('*, product_variants(*), product_images(*)')
+          .select(PRODUCT_LIST_COLUMNS)
           .eq('status', 'active')
           .in('category_id', categoryIds)
           .order('created_at', { ascending: false });
 
         if (error) throw error;
-        setProducts(data || []);
+        if (active) setProducts(data || []);
       } catch (err) {
         console.error('Fashion page fetch error:', err);
-        setProducts([]);
+        if (active) {
+          setProducts([]);
+          setLoadError(true);
+        }
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
 
     fetchFashion();
-  }, []);
+    return () => {
+      active = false;
+    };
+  }, [reloadKey]);
 
   const buildCard = (product: any) => {
     const variants = product.product_variants || [];
     const hasVariants = variants.length > 0;
     const minVariantPrice = hasVariants ? Math.min(...variants.map((v: any) => v.price || product.price)) : undefined;
     const totalStock = hasVariants ? variants.reduce((s: number, v: any) => s + (v.quantity || 0), 0) : 0;
-    const effectiveStock = hasVariants ? totalStock : product.quantity;
+    const effectiveStock = sellableStock(hasVariants ? totalStock : product.quantity, product);
+    const images = [...(product.product_images || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
     const colorVariants: ColorVariant[] = [];
     const seenColors = new Set<string>();
     for (const c of (product.metadata?.product_options?.color?.values || []) as string[]) {
@@ -102,14 +114,14 @@ export default function FashionPage() {
         slug={product.slug}
         name={product.name}
         price={product.price}
-        originalPrice={product.compare_at_price}
-        image={product.product_images?.[0]?.url || 'https://via.placeholder.com/400x500'}
-        rating={product.rating_avg || 5}
+        originalPrice={product.compare_at_price ?? undefined}
+        image={images[0]?.url || NO_IMAGE}
+        rating={product.rating_avg || 0}
         reviewCount={product.review_count || 0}
         badge={product.featured ? 'Featured' : undefined}
-        inStock={effectiveStock > 0}
-        isPreorder={product.metadata?.is_preorder ?? !!product.metadata?.preorder_shipping}
-        maxStock={effectiveStock || 50}
+        inStock={effectiveStock >= (product.moq || 1)}
+        isPreorder={isPreorderProduct(product)}
+        maxStock={effectiveStock}
         moq={product.moq || 1}
         hasVariants={hasVariants}
         minVariantPrice={minVariantPrice}
@@ -151,8 +163,8 @@ export default function FashionPage() {
               The drop
             </span>
             <h2 className="font-serif text-3xl md:text-5xl text-gray-900 mb-3">Shop Fashion</h2>
-            <p className="text-gray-400 text-base max-w-xl mx-auto font-light">
-              Everything assigned to the Fashion category appears here automatically.
+            <p className="text-gray-500 text-base max-w-xl mx-auto font-light">
+              Tops, trousers and more from our streetwear collection.
             </p>
           </AnimatedSection>
 
@@ -166,22 +178,34 @@ export default function FashionPage() {
                 </div>
               ))}
             </div>
+          ) : loadError ? (
+            <div className="text-center py-20" role="alert">
+              <p className="text-gray-700 font-semibold mb-2">Couldn&apos;t load fashion items</p>
+              <p className="text-gray-500 text-sm mb-6">Check your connection and try again.</p>
+              <button
+                type="button"
+                onClick={() => setReloadKey((k) => k + 1)}
+                className="inline-flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-full font-bold text-sm hover:bg-[#0F1A47] transition-all"
+              >
+                Try again
+              </button>
+            </div>
           ) : products.length > 0 ? (
             <AnimatedGrid className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-6 lg:gap-8">
               {products.map(buildCard)}
             </AnimatedGrid>
           ) : (
             <div className="text-center py-20 border-2 border-dashed border-gray-100 rounded-3xl">
-              <i className="ri-t-shirt-line text-5xl text-gray-200 block mb-4" />
-              <p className="text-gray-400 font-semibold mb-2">Fashion pieces coming soon</p>
-              <p className="text-gray-300 text-sm mb-8 max-w-md mx-auto">
-                Assign products to the Fashion category in Admin and they will show up here.
+              <i className="ri-t-shirt-line text-5xl text-gray-300 block mb-4" aria-hidden="true" />
+              <p className="text-gray-600 font-semibold mb-2">Fashion pieces coming soon</p>
+              <p className="text-gray-500 text-sm mb-8 max-w-md mx-auto">
+                There are no fashion items right now. Have a look at the rest of the shop.
               </p>
               <Link
                 href="/shop"
                 className="inline-flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-full font-bold text-sm hover:bg-[#0F1A47] transition-all"
               >
-                Browse Shop <i className="ri-arrow-right-line" />
+                Browse Shop <i className="ri-arrow-right-line" aria-hidden="true" />
               </Link>
             </div>
           )}

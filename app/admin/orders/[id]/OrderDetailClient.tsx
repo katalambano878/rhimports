@@ -26,6 +26,8 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [storeName, setStoreName] = useState('RNH Imports');
   const [storeEmail, setStoreEmail] = useState('');
+  const [statusHistory, setStatusHistory] = useState<{ id: string; status: string; notes: string | null; created_at: string }[]>([]);
+  const [markingPaid, setMarkingPaid] = useState(false);
 
   const handlePrint = () => {
     window.print();
@@ -55,6 +57,30 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
       .then(({ data }) => { if (data?.value) setStoreEmail(typeof data.value === 'string' ? data.value : String(data.value)); });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch when orderId changes
   }, [orderId]);
+
+  // The orders list links here with ?print=true: open the print dialog once the slip has data.
+  const [autoPrinted, setAutoPrinted] = useState(false);
+  useEffect(() => {
+    if (!order || autoPrinted || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('print') !== 'true') return;
+    setAutoPrinted(true);
+    const t = window.setTimeout(() => window.print(), 400);
+    return () => window.clearTimeout(t);
+  }, [order, autoPrinted]);
+
+  const fetchStatusHistory = async (id: string) => {
+    const { data, error: histErr } = await supabase
+      .from('order_status_history')
+      .select('id, status, notes, created_at')
+      .eq('order_id', id)
+      .order('created_at', { ascending: true });
+    if (histErr) {
+      console.error('Error fetching status history:', histErr);
+      return;
+    }
+    setStatusHistory(data || []);
+  };
 
   const fetchOrderDetails = async () => {
     try {
@@ -119,6 +145,7 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
       setOrder(data);
       setTrackingNumber(data.metadata?.tracking_number || '');
       setAdminNotes(data.notes || '');
+      fetchStatusHistory(data.id);
 
     } catch (err: any) {
       console.error('Error fetching order:', err);
@@ -128,71 +155,234 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
     }
   };
 
-  const handleUpdateStatus = async (newStatus?: string) => {
-    try {
-      setStatusUpdating(true);
-      const statusToUpdate = newStatus || order.status;
+  const getAuthToken = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token;
+  };
 
-      const { error } = await supabase
-        .from('orders')
-        .update({
-          status: statusToUpdate,
-          notes: adminNotes,
-          metadata: {
-            ...order.metadata,
-            tracking_number: trackingNumber
+  /** Email + SMS the customer about a status (or tracking) change. Returns a warning when it failed. */
+  const sendStatusNotification = async (status: string, tracking: string): Promise<string | null> => {
+    try {
+      const addr = order.shipping_address || {};
+      const name = (addr.firstName && addr.lastName)
+        ? `${addr.firstName.trim()} ${addr.lastName.trim()}`
+        : addr.full_name || addr.firstName || order.email?.split('@')[0] || 'Customer';
+      const authToken = await getAuthToken();
+      const res = await fetch('/api/notifications', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken && { 'Authorization': `Bearer ${authToken}` })
+        },
+        body: JSON.stringify({
+          type: 'order_status',
+          payload: {
+            email: order.email,
+            name,
+            orderId: order.id,
+            orderNumber: order.order_number || orderId,
+            status,
+            trackingNumber: tracking,
+            phone: addr.phone || order.phone
           }
         })
-        .eq('id', order.id);
-
-      if (error) throw error;
-
-      // Update local state
-      setOrder({
-        ...order,
-        status: statusToUpdate,
-        notes: adminNotes,
-        metadata: { ...order.metadata, tracking_number: trackingNumber }
       });
-
-      // Send Notification (Email + SMS)
-      // Only send if status changed OR tracking number was added/changed
-      const statusChanged = statusToUpdate !== order.status;
-      const trackingChanged = trackingNumber !== order.metadata?.tracking_number;
-
-      if (statusChanged || (trackingChanged && trackingNumber)) {
-        // Get auth token for notification API
-        const { data: { session } } = await supabase.auth.getSession();
-        const authToken = session?.access_token;
-
-        fetch('/api/notifications', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(authToken && { 'Authorization': `Bearer ${authToken}` })
-          },
-          body: JSON.stringify({
-            type: 'order_status',
-            payload: {
-              email: order.email,
-              name: customerName,
-              orderId: orderId,
-              orderNumber: order.order_number || orderId,
-              status: statusToUpdate,
-              trackingNumber: trackingNumber,
-              phone: shippingAddress.phone || order.phone // Ensure phone is passed for SMS
-            }
-          })
-        }).catch(err => console.error('Notification error:', err));
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return body?.error || `Notification failed (${res.status})`;
       }
+      return null;
+    } catch (err: any) {
+      console.error('Notification error:', err);
+      return `Notification could not be sent: ${err?.message || 'network error'}`;
+    }
+  };
 
-      alert('Order updated successfully');
+  /** Re-read the order's metadata now and merge only our keys, so a payment callback's keys survive. */
+  const mergeIntoCurrentMetadata = async (patch: Record<string, unknown>) => {
+    const { data: fresh, error: readErr } = await supabase
+      .from('orders')
+      .select('metadata')
+      .eq('id', order.id)
+      .single();
+    if (readErr) throw readErr;
+    const current = fresh?.metadata && typeof fresh.metadata === 'object' && !Array.isArray(fresh.metadata)
+      ? fresh.metadata
+      : {};
+    return { ...current, ...patch };
+  };
+
+  /**
+   * Cancel or refund through the server so payment status and stock are
+   * handled in one transaction. Asks for confirmation first.
+   */
+  const handleCancelOrRefund = async (action: 'cancel' | 'refund') => {
+    if (!order) return;
+    const wasPaid = order.payment_status === 'paid' || order.payment_status === 'partially_refunded';
+    const stockTaken = !!order.metadata?.stock_reduced && !order.metadata?.stock_restored;
+    const lines: string[] = [
+      action === 'refund'
+        ? `Mark order ${order.order_number} as REFUNDED?`
+        : `Cancel order ${order.order_number}?`,
+      '',
+    ];
+    if (action === 'refund') {
+      lines.push(wasPaid
+        ? '• Payment status will change to "refunded". No money is sent back automatically: refund the customer through Mobile Money, your payment provider or in cash yourself.'
+        : '• The order was not paid, so payment status stays as it is.');
+    } else if (wasPaid) {
+      lines.push('• The order is paid. Cancelling does NOT mark the payment refunded. If you are giving the money back, choose "Refunded" instead.');
+    }
+    lines.push(stockTaken
+      ? '• The items will be put back into stock.'
+      : '• Stock is not changed (it was never taken for this order, or was already returned).');
+    lines.push('• The customer will be notified of the new status.');
+    if (!confirm(lines.join('\n'))) return;
+
+    try {
+      setStatusUpdating(true);
+      const authToken = await getAuthToken();
+      const res = await fetch('/api/admin/orders/refund', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken && { Authorization: `Bearer ${authToken}` }),
+        },
+        body: JSON.stringify({ orderId: order.id, action }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `Request failed (${res.status})`);
+
+      const newStatus = action === 'refund' ? 'refunded' : 'cancelled';
+      const warning = body?.alreadyDone ? null : await sendStatusNotification(newStatus, order.metadata?.tracking_number || '');
+      await fetchOrderDetails();
+      alert(
+        (body?.alreadyDone ? 'Order was already in that state.' : `Order ${newStatus}.`) +
+          (body?.stockRestored ? ' Stock was returned.' : '') +
+          (warning ? `\n\nThe customer was not notified: ${warning}` : '')
+      );
       setShowStatusMenu(false);
-    } catch (err) {
-      console.error('Error updating order:', err);
-      alert('Failed to update order');
+    } catch (err: any) {
+      console.error('Error cancelling/refunding order:', err);
+      alert('Failed to update order: ' + (err?.message || 'Unknown error'));
     } finally {
       setStatusUpdating(false);
+    }
+  };
+
+  /** Change the order status after the staff member confirms; records an order_status_history row. */
+  const handleChangeStatus = async (newStatus: string) => {
+    if (!order) return;
+    setShowStatusMenu(false);
+    const previousStatus = order.status || 'pending';
+    if (newStatus === previousStatus) return;
+    if (newStatus === 'cancelled' || newStatus === 'refunded') {
+      await handleCancelOrRefund(newStatus === 'refunded' ? 'refund' : 'cancel');
+      return;
+    }
+    if (previousStatus === 'cancelled' || previousStatus === 'refunded') {
+      alert(`This order is ${previousStatus}. It cannot be reopened here, because its stock and payment were already settled. Create a new order instead.`);
+      return;
+    }
+    const unpaid = order.payment_status !== 'paid';
+    const msg =
+      `Change order ${order.order_number} from "${statusLabel(previousStatus)}" to "${statusLabel(newStatus)}"?\n\n` +
+      (unpaid ? `Warning: this order is NOT paid (payment: ${order.payment_status}). If the money has been received, use "Mark as Paid" first.\n\n` : '') +
+      'The customer will be notified by email/SMS.';
+    if (!confirm(msg)) return;
+
+    try {
+      setStatusUpdating(true);
+      const { error: upErr } = await supabase
+        .from('orders')
+        .update({ status: newStatus, updated_at: new Date().toISOString() })
+        .eq('id', order.id);
+      if (upErr) throw upErr;
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error: histErr } = await supabase.from('order_status_history').insert({
+        order_id: order.id,
+        status: newStatus,
+        notes: `Changed from ${previousStatus}`,
+        created_by: user?.id ?? null,
+      });
+      if (histErr) console.error('Status history insert failed:', histErr);
+
+      setOrder({ ...order, status: newStatus });
+      fetchStatusHistory(order.id);
+      const warning = await sendStatusNotification(newStatus, order.metadata?.tracking_number || '');
+      alert(
+        `Order status changed to ${statusLabel(newStatus)}.` +
+          (histErr ? '\n\nThe change was not written to the status history.' : '') +
+          (warning ? `\n\nThe customer was not notified: ${warning}` : '')
+      );
+    } catch (err: any) {
+      console.error('Error updating order status:', err);
+      alert('Failed to update order status: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
+
+  /** Save tracking number and admin notes without touching any other metadata key. */
+  const handleSaveDetails = async () => {
+    if (!order) return;
+    try {
+      setStatusUpdating(true);
+      const previousTracking = order.metadata?.tracking_number || '';
+      const trackingChanged = trackingNumber !== previousTracking;
+      const update: Record<string, unknown> = { notes: adminNotes, updated_at: new Date().toISOString() };
+      let nextMetadata = order.metadata;
+      if (trackingChanged) {
+        nextMetadata = await mergeIntoCurrentMetadata({ tracking_number: trackingNumber });
+        update.metadata = nextMetadata;
+      }
+      const { error: upErr } = await supabase.from('orders').update(update).eq('id', order.id);
+      if (upErr) throw upErr;
+
+      setOrder({ ...order, notes: adminNotes, metadata: nextMetadata });
+
+      let warning: string | null = null;
+      if (trackingChanged && trackingNumber) {
+        warning = await sendStatusNotification(order.status, trackingNumber);
+      }
+      alert(warning ? `Saved, but the customer was not notified.\n\n${warning}` : 'Saved');
+    } catch (err: any) {
+      console.error('Error updating order:', err);
+      alert('Failed to save: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
+
+  const handleMarkAsPaid = async () => {
+    if (!order) return;
+    if (!confirm(
+      `Mark order ${order.order_number} (GH₵ ${Number(order.total || 0).toFixed(2)}) as PAID?\n\n` +
+      'Only do this after you have received the money. Stock is taken for the items and a pending order moves to Processing.'
+    )) return;
+    try {
+      setMarkingPaid(true);
+      const authToken = await getAuthToken();
+      const res = await fetch('/api/admin/orders/mark-paid', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken && { Authorization: `Bearer ${authToken}` }),
+        },
+        body: JSON.stringify({ orderNumber: order.order_number }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.success === false) {
+        throw new Error(body?.error || `Request failed (${res.status})`);
+      }
+      await fetchOrderDetails();
+      alert(body?.order?.already_paid ? 'This order was already marked as paid.' : 'Order marked as paid.');
+    } catch (err: any) {
+      console.error('Error marking as paid:', err);
+      alert('Failed to mark as paid: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setMarkingPaid(false);
     }
   };
 
@@ -247,14 +437,18 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
     }
   };
 
-  const statusOptions = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
-  const statusLabel = (s: string) => s === 'shipped' ? 'Packaged' : s.charAt(0).toUpperCase() + s.slice(1);
+  const statusOptions = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'];
+  function statusLabel(s: string) {
+    if (s === 'shipped') return 'Packaged';
+    return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/_/g, ' ');
+  }
   const statusColors: any = {
     'pending': 'bg-amber-100 text-amber-700 border-amber-200',
     'processing': 'bg-blue-100 text-blue-700 border-blue-200',
     'shipped': 'bg-purple-100 text-purple-700 border-purple-200',
     'delivered': 'bg-gray-100 text-gray-700 border-gray-200',
     'cancelled': 'bg-red-100 text-red-700 border-red-200',
+    'refunded': 'bg-purple-100 text-purple-700 border-purple-200',
     'awaiting_payment': 'bg-gray-100 text-gray-700 border-gray-200'
   };
 
@@ -473,6 +667,22 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
                   </div>
                 ))}
               </div>
+              {statusHistory.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-gray-200">
+                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Status changes</h3>
+                  <ul className="space-y-2">
+                    {statusHistory.map((h) => (
+                      <li key={h.id} className="flex justify-between gap-4 text-sm">
+                        <span className="text-gray-900">
+                          {statusLabel(h.status)}
+                          {h.notes && <span className="text-gray-500"> — {h.notes}</span>}
+                        </span>
+                        <span className="text-gray-500 whitespace-nowrap">{new Date(h.created_at).toLocaleString()}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
 
@@ -492,9 +702,8 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
                     {statusOptions.map((status) => (
                       <button
                         key={status}
-                        onClick={() => {
-                          handleUpdateStatus(status);
-                        }}
+                        disabled={statusUpdating}
+                        onClick={() => handleChangeStatus(status)}
                         className={`w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors ${status === currentStatus ? 'bg-gray-50 font-semibold' : ''
                           }`}
                       >
@@ -518,12 +727,13 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
               </div>
 
               <button
-                onClick={() => handleUpdateStatus()}
+                onClick={handleSaveDetails}
                 disabled={statusUpdating}
                 className="w-full mt-4 bg-gray-700 hover:bg-primary text-white py-3 rounded-lg font-semibold transition-colors whitespace-nowrap disabled:opacity-50"
               >
-                {statusUpdating ? 'Updating...' : 'Update Status'}
+                {statusUpdating ? 'Saving...' : 'Save Tracking'}
               </button>
+              <p className="text-xs text-gray-500 mt-2">Choosing a status above asks you to confirm before anything changes.</p>
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -576,6 +786,22 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
                   </span>
                 </div>
               </div>
+
+              {(order.payment_status === 'pending' || order.payment_status === 'failed') && order.status !== 'cancelled' && order.status !== 'refunded' && (
+                <div className="mt-4 pt-4 border-t border-gray-200">
+                  <button
+                    onClick={handleMarkAsPaid}
+                    disabled={markingPaid}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-semibold transition-colors whitespace-nowrap disabled:opacity-50 flex items-center justify-center cursor-pointer"
+                  >
+                    {markingPaid ? (
+                      <><i className="ri-loader-4-line animate-spin mr-2"></i>Processing...</>
+                    ) : (
+                      <><i className="ri-checkbox-circle-line mr-2"></i>Mark as Paid</>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -616,7 +842,7 @@ export default function OrderDetailClient({ orderId }: OrderDetailClientProps) {
                 className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-500 focus:border-gray-500 resize-none"
               />
               <button
-                onClick={() => handleUpdateStatus()}
+                onClick={handleSaveDetails}
                 disabled={statusUpdating}
                 className="w-full mt-3 bg-gray-700 hover:bg-primary text-white py-2 rounded-lg font-medium transition-colors whitespace-nowrap disabled:opacity-50"
               >

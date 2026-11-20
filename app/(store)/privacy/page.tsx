@@ -281,7 +281,7 @@ export default function PrivacyPage() {
             </div>
 
             <p className="text-gray-600 leading-relaxed">
-              To exercise any of these rights, please contact us at <a href="mailto:contact@example.com" className="text-gray-900 font-medium hover:underline">contact@example.com</a> or through your account settings. We will respond within 30 days.
+              To exercise any of these rights, please contact us at <a href="mailto:info@rnhimports.com" className="text-gray-900 font-medium hover:underline">info@rnhimports.com</a> or through your account settings. We will respond within 30 days.
             </p>
           </section>
 
@@ -302,27 +302,13 @@ export default function PrivacyPage() {
               <div className="bg-white border border-gray-200 p-6 rounded-xl">
                 <h3 className="font-bold text-gray-900 mb-2">Analytics Cookies</h3>
                 <p className="text-gray-600 text-sm leading-relaxed">
-                  Help us understand how visitors use our website so we can improve it. These collect anonymous usage data.
-                </p>
-              </div>
-
-              <div className="bg-white border border-gray-200 p-6 rounded-xl">
-                <h3 className="font-bold text-gray-900 mb-2">Marketing Cookies</h3>
-                <p className="text-gray-600 text-sm leading-relaxed">
-                  Used to show you relevant advertisements based on your interests. You can opt out of these through your browser settings.
-                </p>
-              </div>
-
-              <div className="bg-white border border-gray-200 p-6 rounded-xl">
-                <h3 className="font-bold text-gray-900 mb-2">Preference Cookies</h3>
-                <p className="text-gray-600 text-sm leading-relaxed">
-                  Remember your preferences and settings (e.g., language, region) to provide a personalised experience.
+                  Google Analytics, to understand how visitors use our website so we can improve it. These are only set if you accept analytics cookies in the cookie banner.
                 </p>
               </div>
             </div>
 
             <p className="text-gray-600 leading-relaxed mt-6">
-              You can control cookie preferences through your browser settings. However, disabling certain cookies may affect website functionality.
+              You choose whether to allow analytics cookies when you first visit. To change your choice, clear this site&apos;s data in your browser and choose again. Blocking essential cookies may stop the cart and sign-in from working.
             </p>
           </section>
 
@@ -384,7 +370,7 @@ export default function PrivacyPage() {
                   <i className="ri-mail-line text-gray-900 text-xl mt-1"></i>
                   <div>
                     <p className="font-medium text-gray-900">Email</p>
-                    <a href="mailto:contact@example.com" className="text-gray-900 hover:underline">contact@example.com</a>
+                    <a href="mailto:info@rnhimports.com" className="text-gray-900 hover:underline">info@rnhimports.com</a>
                   </div>
                 </div>
 
@@ -392,7 +378,7 @@ export default function PrivacyPage() {
                   <i className="ri-phone-line text-gray-900 text-xl mt-1"></i>
                   <div>
                     <p className="font-medium text-gray-900">Phone</p>
-                    <a href="tel:" className="text-gray-900 hover:underline">Contact</a>
+                    <a href="tel:+233242205331" className="text-gray-900 hover:underline">024 220 5331</a>
                   </div>
                 </div>
 
@@ -400,7 +386,7 @@ export default function PrivacyPage() {
                   <i className="ri-map-pin-line text-gray-900 text-xl mt-1"></i>
                   <div>
                     <p className="font-medium text-gray-900">Address</p>
-                    <p className="text-gray-600">Configure in Admin → Settings</p>
+                    <p className="text-gray-600">Amasaman Achiaman, Annosel Junction, Accra, Ghana</p>
                   </div>
                 </div>
               </div>

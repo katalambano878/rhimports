@@ -13,6 +13,8 @@ export type WishlistItem = {
     badge?: string;
     inStock: boolean;
     slug: string;
+    /** True when the product has options to choose (size, colour, ...). */
+    hasVariants?: boolean;
 };
 
 type WishlistContextType = {
@@ -22,6 +24,8 @@ type WishlistContextType = {
     isInWishlist: (itemId: string) => boolean;
     clearWishlist: () => void;
     wishlistCount: number;
+    /** True once the saved wishlist has been read from this browser. */
+    ready: boolean;
 };
 
 const WishlistContext = createContext<WishlistContextType | undefined>(undefined);
@@ -47,7 +51,8 @@ export function WishlistProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (isInitialized) {
             localStorage.setItem('wishlist', JSON.stringify(wishlist));
-            // Keep header/mobile badge counts in sync with context changes
+            // Tell listeners (the header badge reads localStorage) only after
+            // the new list is saved, so the count is never one behind.
             window.dispatchEvent(new Event('wishlistUpdated'));
         }
     }, [wishlist, isInitialized]);
@@ -81,6 +86,7 @@ export function WishlistProvider({ children }: { children: ReactNode }) {
             isInWishlist,
             clearWishlist,
             wishlistCount,
+            ready: isInitialized,
         }}>
             {children}
         </WishlistContext.Provider>

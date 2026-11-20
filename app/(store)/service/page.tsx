@@ -9,7 +9,7 @@ const SERVICE_PILLARS = [
     icon: 'ri-global-line',
     title: 'Global Sourcing',
     subtitle:
-      'We work directly with verified manufacturers in China to source genuine products at fair prices.',
+      'We work with verified suppliers abroad to source genuine products at fair prices. Most items are preorders, delivered 45–60 days after the order.',
   },
   {
     icon: 'ri-shield-check-line',

@@ -21,7 +21,7 @@ export default function RefundPolicyPage() {
             <p className="text-xl text-gray-600 leading-relaxed">
               Our return and refund terms so you can shop with confidence.
             </p>
-            <p className="text-sm text-gray-500 mt-4">Last updated: February 2025</p>
+            <p className="text-sm text-gray-500 mt-4">Last updated: November 2026</p>
           </AnimatedSection>
         </div>
       </div>
@@ -46,7 +46,7 @@ export default function RefundPolicyPage() {
 
             <h3 className="text-xl font-bold text-gray-900 mb-4 mt-8">How to Start a Return</h3>
             <p className="text-gray-600 leading-relaxed mb-4">
-              To start a return, you can contact us on WhatsApp <a href={whatsappHref} className="text-gray-900 font-medium hover:underline" target="_blank" rel="noopener noreferrer">{contactPhone}</a>. If your return is accepted, we&apos;ll send you a return shipping label, as well as instructions on how and where to send your package. Items sent back to us without first requesting a return will not be accepted.
+              To start a return, use our <Link href="/returns" className="text-gray-900 font-medium hover:underline">returns form</Link> or contact us on WhatsApp <a href={whatsappHref} className="text-gray-900 font-medium hover:underline" target="_blank" rel="noopener noreferrer">{contactPhone}</a>. If your return is accepted, we&apos;ll tell you how and where to send the item. Items sent back to us without first requesting a return will not be accepted.
             </p>
             <p className="text-gray-600 leading-relaxed">
               You can always contact us for any return question at{' '}
@@ -77,7 +77,7 @@ export default function RefundPolicyPage() {
           <section className="mb-12">
             <h2 className="text-3xl font-bold text-gray-900 mb-6">Refunds</h2>
             <p className="text-gray-600 leading-relaxed mb-4">
-              If we don&apos;t have the same item you purchased, then a full refund will be made. We will notify you once we&apos;ve received and inspected your return, and let you know if the refund was approved or not. If approved, you&apos;ll be automatically refunded on your original payment method. Please remember it can take some time for your bank or credit card company to process and post the refund too.
+              If we don&apos;t have the same item you purchased, then a full refund will be made. We will notify you once we&apos;ve received and inspected your return, and let you know if the refund was approved or not. If approved, you&apos;ll be refunded to your original payment method (mobile money or card). Please remember it can take some time for your mobile money or card provider to process and post the refund too.
             </p>
           </section>
 

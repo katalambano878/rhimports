@@ -40,7 +40,7 @@ export async function GET() {
             }
         });
     } catch (err: any) {
-        console.error('[Storefront API] Error:', err);
-        return NextResponse.json({ error: err.message }, { status: 500 });
+        console.error('[Storefront API] Error:', err?.message || err);
+        return NextResponse.json({ error: 'Failed to fetch categories' }, { status: 500 });
     }
 }

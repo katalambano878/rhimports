@@ -3,12 +3,13 @@ import Script from "next/script";
 import { CartProvider } from "@/context/CartContext";
 import { WishlistProvider } from "@/context/WishlistContext";
 import "./globals.css";
+import { ConsentedAnalytics } from "@/components/CookieConsent";
 
 const siteUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://rnhimports.com';
 const siteName = 'RNH Imports';
 const siteTagline = 'Premium Electronics, Imported for Ghana';
 const siteDescription =
-  'RNH Imports is Ghana\'s trusted electronics import company. We source genuine laptops, phones, tablets, cameras, gaming consoles and audio gear directly from verified manufacturers in China — cutting out middlemen so you get the best prices. Ghana-wide delivery, WhatsApp support, and zero counterfeits.';
+  'RNH Imports is a Ghanaian electronics import company. We source genuine laptops, phones, tablets, cameras, gaming consoles and audio gear from verified suppliers abroad, mostly as preorders delivered 45–60 days after you order. Pay online with mobile money or card, doorstep delivery in Ghana, WhatsApp support.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -102,9 +103,6 @@ export const metadata: Metadata = {
     description: siteDescription,
     images: [{ url: '/og-image.png', alt: `${siteName} — Premium Electronics, Imported for Ghana` }],
   },
-  alternates: {
-    canonical: siteUrl,
-  },
   other: {
     'theme-color': '#1B2A6B',
     'msapplication-TileColor': '#1B2A6B',
@@ -119,6 +117,11 @@ export const metadata: Metadata = {
 
 const GA_MEASUREMENT_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
 const RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+
+/** JSON-LD inside <script>: escape "<" so no value can close the tag. */
+function jsonLd(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, '\\u003c');
+}
 
 const organizationSchema = {
   "@context": "https://schema.org",
@@ -217,7 +220,7 @@ const storeSchema = {
   ],
   "priceRange": "$$",
   "currenciesAccepted": "GHS",
-  "paymentAccepted": "Cash, Mobile Money",
+  "paymentAccepted": "Mobile Money, Card",
   "areaServed": {
     "@type": "Country",
     "name": "Ghana",
@@ -252,7 +255,7 @@ const faqSchema = {
       "name": "Does RNH Imports sell genuine products?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Yes. Every product we sell is sourced directly from verified manufacturers in China. We carefully verify our supply chain — zero counterfeits, guaranteed.",
+        "text": "Yes. Every product we sell is sourced from verified suppliers abroad. Most products are preorders, delivered 45–60 days after the order.",
       },
     },
     {
@@ -260,7 +263,7 @@ const faqSchema = {
       "name": "Do you deliver across Ghana?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Yes, we deliver to all regions in Ghana including Accra, Kumasi, Takoradi, Tamale, Cape Coast and more. We handle shipping, customs and last-mile delivery.",
+        "text": "Yes. We deliver to your door in Ghana. Our team contacts you with the delivery cost before delivery.",
       },
     },
     {
@@ -276,7 +279,7 @@ const faqSchema = {
       "name": "What products does RNH Imports sell?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "We sell laptops, smartphones, tablets, cameras, gaming consoles, audio equipment, wearables, TVs, and tech accessories — all imported directly from manufacturers.",
+        "text": "We sell laptops, smartphones, tablets, cameras, gaming consoles, audio equipment and tech accessories, imported from verified suppliers abroad.",
       },
     },
   ],
@@ -306,30 +309,11 @@ export default function RootLayout({
         {/* eslint-disable-next-line @next/next/no-page-custom-font -- App Router root layout: fonts apply to all pages */}
         <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
 
-        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationSchema) }} />
-        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }} />
-        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(storeSchema) }} />
-        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }} />
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(organizationSchema) }} />
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(websiteSchema) }} />
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(storeSchema) }} />
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(faqSchema) }} />
       </head>
-
-      {GA_MEASUREMENT_ID && (
-        <>
-          <Script
-            src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`}
-            strategy="afterInteractive"
-          />
-          <Script id="google-analytics" strategy="afterInteractive">
-            {`
-              window.dataLayer = window.dataLayer || [];
-              function gtag(){dataLayer.push(arguments);}
-              gtag('js', new Date());
-              gtag('config', '${GA_MEASUREMENT_ID}', {
-                page_path: window.location.pathname,
-              });
-            `}
-          </Script>
-        </>
-      )}
 
       {RECAPTCHA_SITE_KEY && (
         <Script
@@ -350,6 +334,8 @@ export default function RootLayout({
             <div id="main-content">
               {children}
             </div>
+            {/* Google Analytics: loaded only after the visitor accepts analytics cookies */}
+            {GA_MEASUREMENT_ID && <ConsentedAnalytics measurementId={GA_MEASUREMENT_ID} />}
           </WishlistProvider>
         </CartProvider>
       </body>

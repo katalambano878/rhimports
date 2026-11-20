@@ -7,9 +7,8 @@ import { supabase } from '@/lib/supabase';
 import { cachedQuery } from '@/lib/query-cache';
 import ProductCard from '@/components/ProductCard';
 import ProductReviews from '@/components/ProductReviews';
-import { StructuredData, generateProductSchema, generateBreadcrumbSchema } from '@/components/SEOHead';
-import { notFound } from 'next/navigation';
-import { useCart } from '@/context/CartContext';
+import { useCart, sellableStock, isPreorderProduct } from '@/context/CartContext';
+import { useWishlist } from '@/context/WishlistContext';
 import { usePageTitle } from '@/hooks/usePageTitle';
 import {
   getStoredOptionLabel,
@@ -34,6 +33,23 @@ function colorNameToHex(name: string): string {
   return map[name.toLowerCase().trim()] || '#d1d5db';
 }
 
+// Explicit columns: never send cost fields to the browser.
+const PRODUCT_COLUMNS = `
+  id, name, slug, description, short_description, price, compare_at_price, sku, quantity,
+  track_quantity, continue_selling, category_id, brand, status, rating_avg, review_count,
+  metadata, moq,
+  categories(name, slug),
+  product_variants(id, name, sku, price, compare_at_price, quantity, option1, option2, option3, image_url, metadata),
+  product_images(url, position, alt_text)
+`;
+
+const RELATED_COLUMNS =
+  'id, name, slug, price, compare_at_price, quantity, track_quantity, continue_selling, moq, rating_avg, review_count, metadata, ' +
+  'product_images(url, position), product_variants(id, name, price, quantity)';
+
+const NO_IMAGE =
+  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M30 65l12-15 10 12 8-9 10 12z%27 fill=%27%23d1d5db%27/%3E%3C/svg%3E";
+
 export default function ProductDetailClient({ slug }: { slug: string }) {
   const [product, setProduct] = useState<any>(null);
   usePageTitle(product?.name || 'Product');
@@ -43,27 +59,26 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
   const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>({});
   const [quantity, setQuantity] = useState(1);
   const [activeTab, setActiveTab] = useState('description');
-  const [isWishlisted, setIsWishlisted] = useState(false);
   const [relatedProducts, setRelatedProducts] = useState<any[]>([]);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const { addToCart } = useCart();
+  const { addToWishlist, removeFromWishlist, isInWishlist } = useWishlist();
+  const isWishlisted = product ? isInWishlist(product.id) : false;
 
   useEffect(() => {
     async function fetchProduct() {
       try {
         setLoading(true);
-        // Fetch main product (cached for 2 minutes)
+        setLoadError(false);
+        // Fetch main product (cached for 2 minutes; failures are never cached)
         const { data: productData, error } = await cachedQuery<{ data: any; error: any }>(
           `product:${slug}`,
           async () => {
             let query = supabase
               .from('products')
-              .select(`
-                *,
-                categories(name),
-                product_variants(*),
-                product_images(url, position, alt_text)
-              `);
+              .select(PRODUCT_COLUMNS);
 
             const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug);
 
@@ -75,14 +90,19 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
               query = query.eq('slug', slug);
             }
 
-            return query.single() as any;
+            return query.maybeSingle() as any;
           },
           2 * 60 * 1000 // 2 minutes
         );
 
-        if (error || !productData) {
+        if (error) {
           console.error('Error fetching product:', error);
-          setLoading(false);
+          setLoadError(true);
+          setProduct(null);
+          return;
+        }
+        if (!productData || (productData.status || '').toLowerCase() !== 'active') {
+          setProduct(null);
           return;
         }
 
@@ -109,31 +129,27 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
           images: productData.product_images?.sort((a: any, b: any) => a.position - b.position).map((img: any) => img.url) || [],
           category: productData.categories?.name || 'Shop',
           rating: productData.rating_avg || 0,
-          reviewCount: 0,
-          stockCount: productData.quantity,
+          reviewCount: productData.review_count || 0,
+          stockCount: sellableStock(productData.quantity, productData),
           moq: productData.moq || 1,
           colors: [...new Set(rawVariants.map((v: any) => v.color).filter(Boolean))],
           colorHexMap,
           variants: rawVariants,
           sizes: rawVariants.map((v: any) => v.name) || [],
-          features: ['Premium Quality', 'Authentic Design'],
-          featured: ['Premium Quality', 'Authentic Design'],
-          care: 'Handle with care.',
           preorderShipping: productData.metadata?.preorder_shipping || null,
-          isPreorder: productData.metadata?.is_preorder ?? !!productData.metadata?.preorder_shipping
+          isPreorder: isPreorderProduct(productData)
         };
 
         // Ensure at least one image/placeholder
         if (transformedProduct.images.length === 0) {
-          transformedProduct.images = ['https://via.placeholder.com/800x800?text=No+Image'];
+          transformedProduct.images = [NO_IMAGE];
         }
 
         setProduct(transformedProduct);
+        setSelectedImage(0);
 
-        // Set initial quantity to MOQ
-        if (transformedProduct.moq > 1) {
-          setQuantity(transformedProduct.moq);
-        }
+        // Start at the minimum order quantity
+        setQuantity(transformedProduct.moq);
 
         // If variants exist, do NOT pre-select — force user to choose
         setSelectedVariant(null);
@@ -145,7 +161,8 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
             `related:${productData.category_id}:${productData.id}`,
             (() => supabase
               .from('products')
-              .select('*, product_images(url, position), product_variants(id, name, price, quantity)')
+              .select(RELATED_COLUMNS)
+              .eq('status', 'active')
               .eq('category_id', productData.category_id)
               .neq('id', productData.id)
               .limit(4)) as any,
@@ -158,18 +175,20 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
               const hasVariants = variants.length > 0;
               const minVariantPrice = hasVariants ? Math.min(...variants.map((v: any) => v.price || p.price)) : undefined;
               const totalVariantStock = hasVariants ? variants.reduce((sum: number, v: any) => sum + (v.quantity || 0), 0) : 0;
-              const effectiveStock = hasVariants ? totalVariantStock : p.quantity;
+              const effectiveStock = sellableStock(hasVariants ? totalVariantStock : p.quantity, p);
+              const images = [...(p.product_images || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
               return {
                 id: p.id,
                 slug: p.slug,
                 name: p.name,
                 price: p.price,
-                image: p.product_images?.[0]?.url || 'https://via.placeholder.com/800?text=No+Image',
+                originalPrice: p.compare_at_price ?? undefined,
+                image: images[0]?.url || NO_IMAGE,
                 rating: p.rating_avg || 0,
-                reviewCount: 0,
-                inStock: effectiveStock > 0,
-                isPreorder: p.metadata?.is_preorder ?? !!p.metadata?.preorder_shipping,
-                maxStock: effectiveStock || 50,
+                reviewCount: p.review_count || 0,
+                inStock: effectiveStock >= (p.moq || 1),
+                isPreorder: isPreorderProduct(p),
+                maxStock: effectiveStock,
                 moq: p.moq || 1,
                 hasVariants,
                 minVariantPrice
@@ -180,6 +199,7 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
 
       } catch (err) {
         console.error(err);
+        setLoadError(true);
       } finally {
         setLoading(false);
       }
@@ -188,7 +208,7 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
     if (slug) {
       fetchProduct();
     }
-  }, [slug]);
+  }, [slug, reloadKey]);
 
   const hasVariants = product?.variants?.length > 0;
   const optionNames: string[] = product?.metadata?.option_names || [];
@@ -238,12 +258,46 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
   };
 
   // Determine the active price: variant price if selected, otherwise base price
-  const activePrice = selectedVariant?.price ?? product?.price ?? 0;
-  const activeStock = selectedVariant ? (selectedVariant.stock ?? selectedVariant.quantity ?? product?.stockCount ?? 0) : (product?.stockCount ?? 0);
+  const activePrice = Number(selectedVariant?.price ?? product?.price ?? 0);
+  // Stock for the current choice, honouring track_quantity, continue_selling and preorder.
+  const variantStock = (variant: any) => (product ? sellableStock(variant?.quantity ?? 0, product) : 0);
+  const activeStock = selectedVariant ? variantStock(selectedVariant) : (product?.stockCount ?? 0);
+  const minQty = product?.moq || 1;
+  const canBuy = activeStock >= minQty;
+  const clampQty = (value: number) =>
+    Math.max(minQty, Math.min(Math.max(activeStock, minQty), Math.floor(value) || minQty));
+
+  // Keep the quantity inside the stock of the chosen variant.
+  useEffect(() => {
+    if (!product) return;
+    setQuantity((q) => clampQty(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedVariant, product]);
+
+  const toggleWishlist = () => {
+    if (!product) return;
+    if (isWishlisted) {
+      removeFromWishlist(product.id);
+    } else {
+      addToWishlist({
+        id: product.id,
+        name: product.name,
+        price: hasVariants ? Math.min(...product.variants.map((v: any) => v.price || product.price)) : product.price,
+        originalPrice: product.compare_at_price ?? undefined,
+        image: product.images[0] || '',
+        rating: product.rating,
+        reviewCount: product.reviewCount,
+        inStock: product.stockCount >= minQty || product.variants.some((v: any) => variantStock(v) >= minQty),
+        slug: product.slug,
+        hasVariants,
+      });
+    }
+  };
 
   const handleAddToCart = () => {
-    if (!product) return;
-    if (needsVariantSelection) return; // Safety check
+    if (!product) return false;
+    if (needsVariantSelection) return false; // Safety check
+    if (!canBuy) return false;
 
     // Build variant display string from selected options
     let variantLabel: string | undefined;
@@ -256,18 +310,20 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
       id: product.id,
       name: product.name,
       price: activePrice,
-      image: product.images[0],
-      quantity: quantity,
+      image: product.images[0] === NO_IMAGE ? '' : product.images[0],
+      quantity: clampQty(quantity),
       variant: variantLabel,
+      variantId: selectedVariant?.id,
       slug: product.slug,
       maxStock: activeStock,
-      moq: product.moq || 1
+      moq: minQty,
+      preorder: product.isPreorder,
     });
+    return true;
   };
 
   const handleBuyNow = () => {
-    handleAddToCart();
-    window.location.href = '/checkout';
+    if (handleAddToCart()) window.location.href = '/checkout';
   };
 
   if (loading) {
@@ -276,6 +332,24 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
         <div className="text-center">
           <i className="ri-loader-4-line text-4xl text-gray-700 animate-spin mb-4 block"></i>
           <p className="text-gray-500">Loading product...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!product && loadError) {
+    return (
+      <div className="min-h-screen bg-white py-20 flex justify-center items-center px-4">
+        <div className="text-center" role="alert">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Couldn&apos;t load this product</h2>
+          <p className="text-gray-600 mb-6">Check your connection and try again.</p>
+          <button
+            type="button"
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="bg-primary hover:bg-primary-dark text-white px-8 py-3 rounded-md font-semibold transition-colors"
+          >
+            Try again
+          </button>
         </div>
       </div>
     );
@@ -292,34 +366,11 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
     );
   }
 
-  const discount = product.compare_at_price ? Math.round((1 - activePrice / product.compare_at_price) * 100) : 0;
+  const discount = product.compare_at_price && Number(product.compare_at_price) > activePrice ? Math.round((1 - activePrice / Number(product.compare_at_price)) * 100) : 0;
   const minVariantPrice = hasVariants ? Math.min(...product.variants.map((v: any) => v.price || product.price)) : product.price;
-
-  const productSchema = generateProductSchema({
-    name: product.name,
-    description: product.description,
-    image: product.images[0],
-    price: hasVariants ? minVariantPrice : product.price,
-    currency: 'GHS',
-    sku: product.sku,
-    rating: product.rating,
-    reviewCount: product.reviewCount,
-    availability: product.quantity > 0 ? 'in_stock' : 'out_of_stock',
-    category: product.category
-  });
-
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (typeof window !== 'undefined' ? window.location.origin : 'https://rnhimports.com');
-  const breadcrumbSchema = generateBreadcrumbSchema([
-    { name: 'Home', url: baseUrl },
-    { name: 'Shop', url: `${baseUrl}/shop` },
-    { name: product.category, url: `${baseUrl}/shop?category=${product.category.toLowerCase().replace(/\s+/g, '-')}` },
-    { name: product.name, url: `${baseUrl}/product/${slug}` }
-  ]);
 
   return (
     <>
-      <StructuredData data={productSchema} />
-      <StructuredData data={breadcrumbSchema} />
 
       <main className="min-h-screen bg-white">
         <section className="py-8 bg-gray-50 border-b border-gray-200">
@@ -329,7 +380,11 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
               <i className="ri-arrow-right-s-line text-gray-400"></i>
               <Link href="/shop" className="text-gray-600 hover:text-gray-700 transition-colors">Shop</Link>
               <i className="ri-arrow-right-s-line text-gray-400"></i>
-              <Link href="#" className="text-gray-600 hover:text-gray-700 transition-colors">{product.category}</Link>
+              {product.categories?.slug ? (
+                <Link href={`/shop?category=${encodeURIComponent(product.categories.slug)}`} className="text-gray-600 hover:text-gray-700 transition-colors">{product.category}</Link>
+              ) : (
+                <span className="text-gray-600">{product.category}</span>
+              )}
               <i className="ri-arrow-right-s-line text-gray-400"></i>
               <span className="text-gray-900 font-medium truncate max-w-[200px]">{product.name}</span>
             </nav>
@@ -382,7 +437,10 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                       return (
                         <button
                           key={index}
+                          type="button"
                           onClick={() => setSelectedImage(index)}
+                          aria-label={`Show image ${index + 1} of ${product.images.length}`}
+                          aria-pressed={selectedImage === index}
                           className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${selectedImage === index ? 'border-gray-700 shadow-md' : 'border-gray-200 hover:border-gray-300'}`}
                         >
                           {thumbIsVid ? (
@@ -416,10 +474,13 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                     <h1 className="text-3xl font-bold text-gray-900 mb-2">{product.name}</h1>
                   </div>
                   <button
-                    onClick={() => setIsWishlisted(!isWishlisted)}
+                    type="button"
+                    onClick={toggleWishlist}
+                    aria-label={isWishlisted ? `Remove ${product.name} from wishlist` : `Add ${product.name} to wishlist`}
+                    aria-pressed={isWishlisted}
                     className="w-10 h-10 flex items-center justify-center border border-gray-200 hover:border-gray-700 rounded-full transition-colors cursor-pointer shrink-0 ml-4"
                   >
-                    <i className={`${isWishlisted ? 'ri-heart-fill text-red-600' : 'ri-heart-line text-gray-700'} text-lg`}></i>
+                    <i className={`${isWishlisted ? 'ri-heart-fill text-red-600' : 'ri-heart-line text-gray-700'} text-lg`} aria-hidden="true"></i>
                   </button>
                 </div>
 
@@ -433,18 +494,24 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                       <span className="text-2xl font-bold text-gray-900">GH₵{activePrice.toFixed(2)}</span>
                     )}
                     {product.compare_at_price && product.compare_at_price > activePrice && (
-                      <span className="text-lg text-gray-400 line-through">GH₵{product.compare_at_price.toFixed(2)}</span>
+                      <span className="text-lg text-gray-400 line-through">GH₵{Number(product.compare_at_price).toFixed(2)}</span>
                     )}
                   </div>
-                  <div className="flex items-center">
-                    <div className="flex items-center space-x-1 mr-2">
-                      <i className="ri-star-fill text-amber-400 text-sm"></i>
-                      <span className="text-gray-700 font-medium text-sm">{Number(product.rating).toFixed(1)}</span>
+                  {Number(product.rating) > 0 && (
+                    <div className="flex items-center">
+                      <div className="flex items-center space-x-1 mr-2">
+                        <i className="ri-star-fill text-amber-400 text-sm" aria-hidden="true"></i>
+                        <span className="text-gray-700 font-medium text-sm">
+                          <span className="sr-only">Rated </span>{Number(product.rating).toFixed(1)}<span className="sr-only"> out of 5</span>
+                        </span>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
 
-                <p className="text-gray-600 leading-relaxed mb-6 text-sm">{product.description}</p>
+                {(product.short_description || product.description) && (
+                  <p className="text-gray-600 leading-relaxed mb-6 text-sm">{product.short_description || product.description}</p>
+                )}
 
                 {/* Product Option Selectors */}
                 {allOptionLabels.filter(o => o.values.length > 0).some(o => o.isColor) && (
@@ -454,24 +521,27 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                       return (
                         <div key={opt.name}>
                           <div className="flex items-center justify-between mb-2">
-                            <label className="font-semibold text-gray-900 text-sm">
+                            <span id={`opt-${opt.name}`} className="font-semibold text-gray-900 text-sm">
                               {opt.name}
                               {selected
                                 ? <span className="font-normal text-gray-600 ml-2">{selected.split('|')[0]}</span>
                                 : <span className="text-red-500 font-normal text-xs ml-2">Required</span>
                               }
-                            </label>
+                            </span>
                           </div>
-                          <div className="flex flex-wrap gap-2">
+                          <div className="flex flex-wrap gap-2" role="group" aria-labelledby={`opt-${opt.name}`}>
                             {opt.values.map((val: string) => {
                               const [colorName, hex] = val.split('|');
                               const isSelected = selected === val;
                               return (
                                 <button
                                   key={val}
+                                  type="button"
                                   onClick={() => handleOptionSelect(opt.name, val)}
                                   className={`group relative flex flex-col items-center gap-1 cursor-pointer`}
                                   title={colorName}
+                                  aria-label={colorName}
+                                  aria-pressed={isSelected}
                                 >
                                   <span
                                     className={`w-9 h-9 rounded-full border-2 transition-all ${
@@ -495,11 +565,12 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                     const selected = selectedOptions[opt.name];
                     return (
                       <div key={opt.name}>
-                        <label className="block font-semibold text-gray-900 mb-1.5 text-sm">
+                        <label htmlFor={`opt-select-${opt.name}`} className="block font-semibold text-gray-900 mb-1.5 text-sm">
                           {opt.name}
                         </label>
                         <div className="relative">
                           <select
+                            id={`opt-select-${opt.name}`}
                             value={selected || ''}
                             onChange={(e) => handleOptionSelect(opt.name, e.target.value)}
                             className={`w-full appearance-none bg-white border text-gray-900 py-2.5 px-3 pr-8 rounded-md font-medium text-sm focus:outline-none focus:ring-1 focus:ring-gray-900 focus:border-gray-900 transition-colors cursor-pointer hover:border-gray-400 border-gray-300`}
@@ -523,17 +594,18 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                 {/* Fallback: legacy variant selector */}
                 {hasVariants && optionNames.length === 0 && (
                   <div className="mb-6">
-                    <label className="block font-semibold text-gray-900 mb-2 text-sm">
+                    <span id="legacy-variant-label" className="block font-semibold text-gray-900 mb-2 text-sm">
                       Variant
-                    </label>
-                    <div className="flex flex-wrap gap-2">
+                    </span>
+                    <div className="flex flex-wrap gap-2" role="group" aria-labelledby="legacy-variant-label">
                       {product.variants.map((variant: any) => {
                         const isSelected = selectedVariant?.id === variant.id;
-                        const variantStock = variant.stock ?? variant.quantity ?? 0;
-                        const isOutOfStock = variantStock === 0 && product.stockCount === 0;
+                        const isOutOfStock = variantStock(variant) < minQty;
                         return (
                           <button
                             key={variant.id || variant.name}
+                            type="button"
+                            aria-pressed={isSelected}
                             onClick={() => setSelectedVariant(variant)}
                             disabled={isOutOfStock}
                             className={`px-4 py-2 rounded-md border font-medium text-sm transition-all cursor-pointer flex flex-col items-center ${
@@ -556,41 +628,49 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                 <div className="flex flex-col sm:flex-row gap-3 mb-3">
                   <div className="flex items-center border border-gray-300 rounded-md h-12 w-32 shrink-0">
                     <button
-                      onClick={() => setQuantity(Math.max(product.moq || 1, quantity - 1))}
-                      className="w-10 h-full flex items-center justify-center text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer"
-                      disabled={activeStock === 0 || quantity <= (product.moq || 1)}
+                      type="button"
+                      onClick={() => setQuantity(clampQty(quantity - 1))}
+                      className="w-10 h-full flex items-center justify-center text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={!canBuy || quantity <= minQty}
+                      aria-label="Decrease quantity"
                     >
-                      <i className="ri-subtract-line"></i>
+                      <i className="ri-subtract-line" aria-hidden="true"></i>
                     </button>
                     <input
                       type="number"
+                      inputMode="numeric"
                       value={quantity}
-                      onChange={(e) => setQuantity(Math.max(product.moq || 1, Math.min(activeStock, parseInt(e.target.value) || (product.moq || 1))))}
+                      onChange={(e) => setQuantity(clampQty(parseInt(e.target.value, 10)))}
                       className="w-12 h-full text-center border-x border-gray-300 focus:outline-none text-base font-semibold"
-                      min={product.moq || 1}
+                      min={minQty}
                       max={activeStock}
-                      disabled={activeStock === 0}
+                      disabled={!canBuy}
+                      aria-label="Quantity"
                     />
                     <button
-                      onClick={() => setQuantity(Math.min(activeStock, quantity + 1))}
-                      className="w-10 h-full flex items-center justify-center text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer"
-                      disabled={activeStock === 0}
+                      type="button"
+                      onClick={() => setQuantity(clampQty(quantity + 1))}
+                      className="w-10 h-full flex items-center justify-center text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={!canBuy || quantity >= activeStock}
+                      aria-label="Increase quantity"
                     >
-                      <i className="ri-add-line"></i>
+                      <i className="ri-add-line" aria-hidden="true"></i>
                     </button>
                   </div>
 
                   <button
-                    disabled={activeStock === 0 || needsVariantSelection}
-                    className={`flex-1 h-12 bg-primary hover:bg-primary-dark text-white rounded-md font-semibold transition-colors flex items-center justify-center space-x-2 text-base whitespace-nowrap cursor-pointer ${(activeStock === 0 || needsVariantSelection) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    type="button"
+                    disabled={!canBuy || needsVariantSelection}
+                    className={`flex-1 h-12 bg-primary hover:bg-primary-dark text-white rounded-md font-semibold transition-colors flex items-center justify-center space-x-2 text-base whitespace-nowrap cursor-pointer ${(!canBuy || needsVariantSelection) ? 'opacity-50 cursor-not-allowed' : ''}`}
                     onClick={handleAddToCart}
                   >
-                    <i className="ri-shopping-cart-line"></i>
-                    <span>{activeStock === 0 ? 'Out of Stock' : needsVariantSelection ? 'Select Options' : 'Add to Cart'}</span>
+                    <i className="ri-shopping-cart-line" aria-hidden="true"></i>
+                    <span>{!canBuy ? 'Out of Stock' : needsVariantSelection ? 'Select Options' : product.isPreorder ? 'Preorder Now' : 'Add to Cart'}</span>
                   </button>
-                  
-                  {activeStock > 0 && !needsVariantSelection && (
+
+                  {canBuy && !needsVariantSelection && (
                     <button
+                      type="button"
                       onClick={handleBuyNow}
                       className="h-12 bg-gray-100 hover:bg-gray-200 text-gray-900 px-6 rounded-md font-semibold transition-colors whitespace-nowrap cursor-pointer"
                     >
@@ -622,11 +702,11 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
                       <i className="ri-information-line mr-1"></i>Min: {product.moq}
                     </span>
                   )}
-                  {activeStock > 10 ? (
+                  {product.isPreorder ? null : activeStock > 10 ? (
                     <span className="text-green-600 font-medium">
-                      <i className="ri-checkbox-circle-line mr-1"></i>In Stock
+                      <i className="ri-checkbox-circle-line mr-1" aria-hidden="true"></i>In Stock
                     </span>
-                  ) : activeStock > 0 ? (
+                  ) : canBuy ? (
                     <span className="text-amber-600 font-medium">
                       <i className="ri-error-warning-line mr-1"></i>Only {activeStock} left
                     </span>
@@ -639,12 +719,12 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
 
                 <div className="border-t border-gray-200 pt-5 space-y-3">
                   <div className="flex items-center text-gray-700">
-                    <i className="ri-store-2-line text-xl text-gray-700 mr-3"></i>
-                    <span>Free store pickup available</span>
+                    <i className="ri-truck-line text-xl text-gray-700 mr-3" aria-hidden="true"></i>
+                    <span>Doorstep delivery in Ghana; our team contacts you with the delivery cost</span>
                   </div>
                   <div className="flex items-center text-gray-700">
-                    <i className="ri-shield-check-line text-xl text-gray-700 mr-3"></i>
-                    <span>Secure payment & buyer protection</span>
+                    <i className="ri-shield-check-line text-xl text-gray-700 mr-3" aria-hidden="true"></i>
+                    <span>Secure payment with Hubtel</span>
                   </div>
                   {product.sku && (
                     <div className="flex items-center text-gray-700">
@@ -661,51 +741,44 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
         <section className="py-16 bg-gray-50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6">
             <div className="border-b border-gray-300 mb-8">
-              <div className="flex space-x-8">
-                {['description', 'features', 'care', 'reviews'].map((tab) => (
+              <div className="flex space-x-8" role="tablist" aria-label="Product information">
+                {(['description', 'reviews'] as const).map((tab) => (
                   <button
                     key={tab}
+                    type="button"
+                    role="tab"
+                    id={`tab-${tab}`}
+                    aria-selected={activeTab === tab}
+                    aria-controls={`panel-${tab}`}
                     onClick={() => setActiveTab(tab)}
                     className={`pb-4 font-semibold transition-colors relative whitespace-nowrap cursor-pointer ${activeTab === tab
                       ? 'text-gray-700 border-b-2 border-gray-700'
                       : 'text-gray-600 hover:text-gray-900'
                       }`}
                   >
-                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    {tab === 'description' ? 'Description' : `Reviews${product.reviewCount > 0 ? ` (${product.reviewCount})` : ''}`}
                   </button>
                 ))}
               </div>
             </div>
 
             {activeTab === 'description' && (
-              <div className="prose max-w-none">
-                <p className="text-gray-700 text-lg leading-relaxed">{product.description}</p>
-              </div>
-            )}
-
-            {activeTab === 'features' && (
-              <div>
-                <h3 className="text-2xl font-bold text-gray-900 mb-6">Key Features</h3>
-                <ul className="grid md:grid-cols-2 gap-4">
-                  {product.features.map((feature: string, index: number) => (
-                    <li key={index} className="flex items-start">
-                      <i className="ri-checkbox-circle-fill text-gray-700 text-xl mr-3 mt-1"></i>
-                      <span className="text-gray-700 text-lg">{feature}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {activeTab === 'care' && (
-              <div>
-                <h3 className="text-2xl font-bold text-gray-900 mb-6">Care Instructions</h3>
-                <p className="text-gray-700 text-lg leading-relaxed">{product.care}</p>
+              <div className="prose max-w-none" role="tabpanel" id="panel-description" aria-labelledby="tab-description">
+                {product.description ? (
+                  <p className="text-gray-700 text-lg leading-relaxed whitespace-pre-line">{product.description}</p>
+                ) : (
+                  <p className="text-gray-500">No description yet.</p>
+                )}
+                {product.isPreorder && (
+                  <p className="mt-4 text-gray-700">
+                    This item is a preorder: it is sourced abroad after you order{product.preorderShipping ? ` (${product.preorderShipping})` : ', and usually arrives 45 – 60 days after the order is placed'}.
+                  </p>
+                )}
               </div>
             )}
 
             {activeTab === 'reviews' && (
-              <div id="reviews">
+              <div id="panel-reviews" role="tabpanel" aria-labelledby="tab-reviews">
                 <ProductReviews productId={product.id} />
               </div>
             )}
@@ -717,7 +790,7 @@ export default function ProductDetailClient({ slug }: { slug: string }) {
             <div className="max-w-7xl mx-auto px-4 sm:px-6">
               <div className="text-center mb-12">
                 <h2 className="text-3xl lg:text-4xl font-bold text-gray-900 mb-4">You May Also Like</h2>
-                <p className="text-lg text-gray-600">Curated recommendations based on this product</p>
+                <p className="text-lg text-gray-600">More from {product.category}</p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">

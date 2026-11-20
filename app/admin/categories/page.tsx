@@ -61,16 +61,55 @@ export default function AdminCategoriesPage() {
   };
 
   const handleDelete = async (categoryId: string) => {
-    if (confirm('Are you sure you want to delete this category? This action cannot be undone.')) {
-      try {
-        const { error } = await supabase.from('categories').delete().eq('id', categoryId);
+    const category = categories.find(c => c.id === categoryId);
+    try {
+      const [{ count: productCount, error: pErr }, { count: childCount, error: cErr }] = await Promise.all([
+        supabase.from('products').select('id', { count: 'exact', head: true }).eq('category_id', categoryId),
+        supabase.from('categories').select('id', { count: 'exact', head: true }).eq('parent_id', categoryId),
+      ]);
+      if (pErr) throw pErr;
+      if (cErr) throw cErr;
+
+      const lines = [`Delete the category "${category?.name || ''}"? This cannot be undone.`];
+      if (productCount || childCount) lines.push('A category that is still in use cannot be deleted directly, so it is emptied first:');
+      if (productCount) lines.push(`${productCount} product${productCount !== 1 ? 's' : ''} in it will become uncategorised.`);
+      if (childCount) lines.push(`${childCount} subcategor${childCount !== 1 ? 'ies' : 'y'} will become top-level categories.`);
+      if (!productCount && !childCount) lines.push('No products or subcategories use it.');
+      if (!confirm(lines.join('\n\n'))) return;
+
+      // The foreign keys have no ON DELETE rule, so detach first or the delete fails.
+      if (productCount) {
+        const { error } = await supabase.from('products').update({ category_id: null }).eq('category_id', categoryId);
         if (error) throw error;
-        setCategories(categories.filter(c => c.id !== categoryId));
-        alert('Category deleted successfully');
-      } catch (err: any) {
-        alert('Error deleting: ' + err.message);
+      }
+      if (childCount) {
+        const { error } = await supabase.from('categories').update({ parent_id: null }).eq('parent_id', categoryId);
+        if (error) throw error;
+      }
+      const { error } = await supabase.from('categories').delete().eq('id', categoryId);
+      if (error) throw error;
+      alert('Category deleted');
+      fetchCategories();
+    } catch (err: any) {
+      alert('Category not deleted: ' + (err?.message || 'unknown error'));
+      fetchCategories();
+    }
+  };
+
+  /** Ids of every category below `id` (children, grandchildren, ...). */
+  const descendantIds = (id: string): Set<string> => {
+    const out = new Set<string>();
+    const stack = [id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      for (const c of categories) {
+        if (c.parent_id === cur && !out.has(c.id)) {
+          out.add(c.id);
+          stack.push(c.id);
+        }
       }
     }
+    return out;
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -109,21 +148,34 @@ export default function AdminCategoriesPage() {
       return;
     }
 
+    const parentId = formData.parent_id || null;
+    if (showEditModal && editingCategory && parentId) {
+      // A category cannot sit under itself or under one of its own subcategories.
+      if (parentId === editingCategory.id || descendantIds(editingCategory.id).has(parentId)) {
+        alert('That parent is inside this category, so the two would contain each other. Choose a different parent.');
+        return;
+      }
+    }
+
     setSaving(true);
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         name: formData.name,
         slug: formData.slug,
         description: formData.description,
         image_url: formData.image_url,
-        parent_id: formData.parent_id || null, // Handle empty string as null
+        parent_id: parentId,
         status: formData.status,
-        metadata: {
-          featured: formData.featured
-        }
+        metadata: { featured: formData.featured }
       };
 
       if (showEditModal && editingCategory) {
+        // Keep any other metadata keys (e.g. homepage settings) and only change `featured`.
+        // Merge with the latest stored metadata, not the copy loaded with the list.
+        const { data: current, error: readErr } = await supabase
+          .from('categories').select('metadata').eq('id', editingCategory.id).single();
+        if (readErr) throw readErr;
+        payload.metadata = { ...(current?.metadata || {}), featured: formData.featured };
         const { error } = await supabase
           .from('categories')
           .update(payload)
@@ -321,7 +373,8 @@ export default function AdminCategoriesPage() {
                   >
                     <option value="">None (Top Level)</option>
                     {categories
-                      .filter(c => c.id !== editingCategory?.id) // Prevent self-parenting
+                      // Not itself, and not one of its own subcategories (that would make a loop).
+                      .filter(c => !editingCategory || (c.id !== editingCategory.id && !descendantIds(editingCategory.id).has(c.id)))
                       .map(c => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))

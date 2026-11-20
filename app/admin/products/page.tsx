@@ -1,26 +1,72 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
+const PAGE_SIZE = 1000;
+
+/** Low-stock threshold for a product: metadata.low_stock_threshold, default 5 (same rule as the dashboard). */
+function lowStockThreshold(product: any): number {
+  const raw = product?.metadata?.low_stock_threshold;
+  const n = Number(raw);
+  return raw !== null && raw !== undefined && raw !== '' && Number.isFinite(n) && n >= 0 ? n : 5;
+}
+
+/** Active, stock-tracked product at or below its threshold (includes out of stock). */
+function isLowStock(product: any): boolean {
+  return product.status === 'active'
+    && product.track_quantity !== false
+    && Number(product.quantity ?? 0) <= lowStockThreshold(product);
+}
+
+function isOutOfStock(product: any): boolean {
+  return product.status === 'active'
+    && product.track_quantity !== false
+    && Number(product.quantity ?? 0) <= 0;
+}
+
+type BulkAction = 'archived' | 'draft' | 'active' | 'delete';
+
+const BULK_LABELS: Record<BulkAction, string> = {
+  archived: 'Archive (hide from shop)',
+  draft: 'Set to Draft',
+  active: 'Set to Active',
+  delete: 'Delete permanently',
+};
+
 export default function ProductsPage() {
+  return (
+    <Suspense fallback={
+      <div className="p-12 text-center text-gray-500">
+        <i className="ri-loader-4-line animate-spin text-3xl mb-2 inline-block"></i>
+        <p>Loading products...</p>
+      </div>
+    }>
+      <ProductsPageInner />
+    </Suspense>
+  );
+}
+
+function ProductsPageInner() {
+  const searchParams = useSearchParams();
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [sortBy, setSortBy] = useState('newest');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
   const [showFilters, setShowFilters] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>(
+    searchParams?.get('filter') === 'low-stock' ? 'low' : 'all'
+  );
+  const [bulkAction, setBulkAction] = useState<BulkAction>('archived');
+  const [bulkWorking, setBulkWorking] = useState(false);
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [categories, setCategories] = useState<any[]>([]);
-
-  // Statistics
-  const [stats, setStats] = useState({
-    total: 0,
-    lowStock: 0,
-    outOfStock: 0,
-    active: 0
-  });
 
   const statusColors: any = {
     'active': 'bg-gray-100 text-gray-900',
@@ -28,77 +74,115 @@ export default function ProductsPage() {
     'archived': 'bg-amber-100 text-amber-700',
   };
 
+  // Follow ?filter=low-stock (dashboard link), also when it changes while on this page.
+  const filterParam = searchParams?.get('filter');
+  useEffect(() => {
+    if (filterParam === 'low-stock') {
+      setStockFilter('low');
+      setShowFilters(true);
+    }
+  }, [filterParam]);
+
   useEffect(() => {
     fetchProducts();
-    fetchCategories();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch when sortBy changes
   }, [sortBy]);
 
+  useEffect(() => {
+    fetchCategories();
+  }, []);
+
+  // Never keep hidden products selected: changing search or filters clears the selection.
+  useEffect(() => {
+    setSelectedProducts([]);
+  }, [searchQuery, categoryFilter, statusFilter, stockFilter]);
+
   const fetchCategories = async () => {
-    const { data } = await supabase.from('categories').select('name');
+    const { data } = await supabase.from('categories').select('id, name').order('name');
     if (data) setCategories(data);
   };
 
   const fetchProducts = async () => {
     try {
       setLoading(true);
-      let query = supabase
-        .from('products')
-        .select(`
-          *,
-          categories(name),
-          product_variants(count),
-          product_images(url, position)
-        `);
+      setLoadError('');
+      const buildQuery = () => {
+        let query = supabase
+          .from('products')
+          .select(`
+            *,
+            categories(name),
+            product_variants(count),
+            product_images(url, position)
+          `);
+        if (sortBy === 'newest') query = query.order('created_at', { ascending: false });
+        if (sortBy === 'price_asc') query = query.order('price', { ascending: true });
+        if (sortBy === 'price_desc') query = query.order('price', { ascending: false });
+        if (sortBy === 'name') query = query.order('name', { ascending: true });
+        if (sortBy === 'stock') query = query.order('quantity', { ascending: true });
+        return query.order('id', { ascending: true });
+      };
 
-      // Apply sorting
-      if (sortBy === 'newest') query = query.order('created_at', { ascending: false });
-      if (sortBy === 'price_asc') query = query.order('price', { ascending: true });
-      if (sortBy === 'price_desc') query = query.order('price', { ascending: false });
-      if (sortBy === 'name') query = query.order('name', { ascending: true });
-      if (sortBy === 'stock') query = query.order('quantity', { ascending: true });
-
-      const { data, error } = await query;
-
-      if (error) throw error;
-
-      if (data) {
-        // Transform data for UI
-        const transformedProducts = data.map((p: any) => ({
-          ...p,
-          category: p.categories?.name || 'Uncategorized',
-          image: p.product_images?.find((img: any) => img.position === 0)?.url
-            || p.product_images?.[0]?.url
-            || 'https://via.placeholder.com/300?text=No+Image',
-          variantsCount: p.product_variants?.[0]?.count || 0,
-          stock: p.quantity,
-          sales: 0, // Placeholder for now
-          rating: p.rating_avg || 0
-        }));
-
-        setProducts(transformedProducts);
-
-        // Calculate stats locally for now (better to do count queries in production)
-        setStats({
-          total: transformedProducts.length,
-          lowStock: transformedProducts.filter(p => p.quantity < (p.metadata?.low_stock_threshold || 5) && p.quantity > 0).length,
-          outOfStock: transformedProducts.filter(p => p.quantity === 0).length,
-          active: transformedProducts.filter(p => p.status === 'active').length
-        });
+      // Page through the whole catalogue so no product is silently left out.
+      const all: any[] = [];
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const { data, error } = await buildQuery().range(from, from + PAGE_SIZE - 1);
+        if (error) throw error;
+        all.push(...(data || []));
+        if (!data || data.length < PAGE_SIZE) break;
       }
-    } catch (error) {
+
+      setProducts(all.map((p: any) => ({
+        ...p,
+        price: Number(p.price) || 0,
+        category: p.categories?.name || 'Uncategorized',
+        image: p.product_images?.find((img: any) => img.position === 0)?.url
+          || p.product_images?.[0]?.url
+          || 'https://via.placeholder.com/300?text=No+Image',
+        variantsCount: p.product_variants?.[0]?.count || 0,
+        stock: Number(p.quantity ?? 0),
+        rating: p.rating_avg || 0
+      })));
+    } catch (error: any) {
       console.error('Error fetching products:', error);
+      setLoadError(error?.message || 'Could not load products.');
     } finally {
       setLoading(false);
     }
   };
 
+  const stats = {
+    total: products.length,
+    active: products.filter(p => p.status === 'active').length,
+    lowStock: products.filter(isLowStock).length,
+    outOfStock: products.filter(isOutOfStock).length,
+  };
+
+  const filteredProducts = products.filter(product => {
+    const term = searchQuery.toLowerCase();
+    const matchesSearch = !term
+      || product.name.toLowerCase().includes(term)
+      || (product.sku && product.sku.toLowerCase().includes(term))
+      || (product.category && product.category.toLowerCase().includes(term));
+    const matchesCategory = !categoryFilter
+      || (categoryFilter === '__none' ? !product.category_id : product.category_id === categoryFilter);
+    const matchesStatus = !statusFilter || product.status === statusFilter;
+    const matchesStock = stockFilter === 'all'
+      || (stockFilter === 'low' && isLowStock(product))
+      || (stockFilter === 'out' && isOutOfStock(product));
+    return matchesSearch && matchesCategory && matchesStatus && matchesStock;
+  });
+
+  /** Selected products that are still visible under the current filters. */
+  const visibleSelectedIds = () => {
+    const visible = new Set(filteredProducts.map((p) => p.id));
+    return selectedProducts.filter((id) => visible.has(id));
+  };
+
+  /** Select-all works on the rows currently shown (search + filters), never the whole catalogue. */
+  const allVisibleSelected = filteredProducts.length > 0 && filteredProducts.every((p) => selectedProducts.includes(p.id));
   const handleSelectAll = () => {
-    if (selectedProducts.length === products.length) {
-      setSelectedProducts([]);
-    } else {
-      setSelectedProducts(products.map(p => p.id));
-    }
+    setSelectedProducts(allVisibleSelected ? [] : filteredProducts.map((p) => p.id));
   };
 
   const handleSelectProduct = (productId: string) => {
@@ -109,37 +193,94 @@ export default function ProductsPage() {
     }
   };
 
+  const deleteErrorMessage = (error: any) => {
+    const msg = error?.message || 'unknown error';
+    if (error?.code === '23503' || /foreign key|violates/i.test(msg)) {
+      return 'It is linked to past orders or carts, so it cannot be deleted. Archive it instead to hide it from the shop.';
+    }
+    return msg;
+  };
+
   const handleDeleteProduct = async (productId: string) => {
-    if (confirm('Are you sure you want to delete this product?')) {
-      const { error } = await supabase.from('products').delete().eq('id', productId);
-      if (!error) {
-        setProducts(products.filter(p => p.id !== productId));
-        alert('Product deleted successfully');
-      } else {
-        alert('Error deleting product');
-      }
+    const product = products.find(p => p.id === productId);
+    if (!confirm(
+      `Delete "${product?.name || 'this product'}" permanently?\n\n` +
+      'Its images, variants, reviews and wishlist entries are deleted too, and this cannot be undone. ' +
+      'To just hide it from the shop, use Archive instead.'
+    )) return;
+    const { error } = await supabase.from('products').delete().eq('id', productId);
+    if (!error) {
+      setProducts(prev => prev.filter(p => p.id !== productId));
+      setSelectedProducts(prev => prev.filter(id => id !== productId));
+      alert('Product deleted.');
+    } else {
+      console.error('Delete error:', error);
+      alert('Could not delete the product. ' + deleteErrorMessage(error));
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (confirm(`Are you sure you want to delete ${selectedProducts.length} products?`)) {
-      const { error } = await supabase.from('products').delete().in('id', selectedProducts);
-      if (!error) {
-        setProducts(products.filter(p => !selectedProducts.includes(p.id)));
-        setSelectedProducts([]);
-        alert('Products deleted successfully');
-      } else {
-        alert('Error deleting products');
+  const handleBulkApply = async () => {
+    const ids = visibleSelectedIds();
+    if (ids.length === 0 || bulkWorking) return;
+    const count = `${ids.length} product${ids.length === 1 ? '' : 's'}`;
+
+    if (bulkAction === 'delete') {
+      if (!confirm(
+        `Delete ${count} permanently?\n\n` +
+        'Their images, variants, reviews and wishlist entries are deleted too, and this cannot be undone. ' +
+        'To just hide them from the shop, choose Archive instead.'
+      )) return;
+      const typed = prompt(`Type ${ids.length} to confirm deleting ${count}.`);
+      if (typed === null) return;
+      if (typed.trim() !== String(ids.length)) {
+        alert('The number did not match. Nothing was deleted.');
+        return;
       }
+    } else {
+      const verb = bulkAction === 'archived'
+        ? 'Archive'
+        : bulkAction === 'draft' ? 'Set to Draft' : 'Publish (set to Active)';
+      const effect = bulkAction === 'active' ? 'They will show in the shop.' : 'They will be hidden from the shop.';
+      if (!confirm(`${verb}: ${count}?\n\n${effect}`)) return;
+    }
+
+    setBulkWorking(true);
+    try {
+      if (bulkAction === 'delete') {
+        const { error } = await supabase.from('products').delete().in('id', ids);
+        if (error) throw new Error(deleteErrorMessage(error) + (ids.length > 1 ? ' (Nothing was deleted; one or more products are linked to orders.)' : ''));
+        setProducts(prev => prev.filter(p => !ids.includes(p.id)));
+        alert(`${count} deleted.`);
+      } else {
+        const { data, error } = await supabase
+          .from('products')
+          .update({ status: bulkAction })
+          .in('id', ids)
+          .select('id');
+        if (error) throw error;
+        const updated = new Set((data || []).map((r: any) => r.id));
+        setProducts(prev => prev.map(p => updated.has(p.id) ? { ...p, status: bulkAction } : p));
+        if (updated.size < ids.length) {
+          alert(`Only ${updated.size} of ${ids.length} products were updated. Check that you are signed in as staff and try again.`);
+        } else {
+          alert(`${count} updated.`);
+        }
+      }
+      setSelectedProducts([]);
+    } catch (err: any) {
+      console.error('Bulk action error:', err);
+      alert('Could not complete the action: ' + (err?.message || 'unknown error'));
+    } finally {
+      setBulkWorking(false);
     }
   };
 
-  const filteredProducts = products.filter(product => {
-    const term = searchQuery.toLowerCase();
-    return product.name.toLowerCase().includes(term) ||
-      (product.sku && product.sku.toLowerCase().includes(term)) ||
-      (product.category && product.category.toLowerCase().includes(term));
-  });
+  const filtersActive = !!(categoryFilter || statusFilter || stockFilter !== 'all');
+  const clearFilters = () => {
+    setCategoryFilter('');
+    setStatusFilter('');
+    setStockFilter('all');
+  };
 
   return (
     <div className="space-y-6">
@@ -158,23 +299,48 @@ export default function ProductsPage() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border-2 border-gray-200 p-4">
+        <button
+          type="button"
+          onClick={clearFilters}
+          className="bg-white rounded-xl border-2 border-gray-200 p-4 text-left cursor-pointer hover:border-gray-400 transition-colors"
+        >
           <p className="text-sm text-gray-600 mb-1">Total Products</p>
           <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
-        </div>
-        <div className="bg-white rounded-xl border-2 border-gray-200 p-4">
+        </button>
+        <button
+          type="button"
+          onClick={() => { setStatusFilter('active'); setStockFilter('all'); setShowFilters(true); }}
+          className={`bg-white rounded-xl border-2 p-4 text-left cursor-pointer transition-colors ${statusFilter === 'active' && stockFilter === 'all' ? 'border-gray-900' : 'border-gray-200 hover:border-gray-400'}`}
+        >
           <p className="text-sm text-gray-600 mb-1">Active</p>
           <p className="text-2xl font-bold text-gray-900">{stats.active}</p>
-        </div>
-        <div className="bg-white rounded-xl border-2 border-gray-200 p-4">
+        </button>
+        <button
+          type="button"
+          onClick={() => { setStockFilter('low'); setShowFilters(true); }}
+          className={`bg-white rounded-xl border-2 p-4 text-left cursor-pointer transition-colors ${stockFilter === 'low' ? 'border-amber-400' : 'border-gray-200 hover:border-amber-300'}`}
+        >
           <p className="text-sm text-gray-600 mb-1">Low Stock</p>
           <p className="text-2xl font-bold text-amber-700">{stats.lowStock}</p>
-        </div>
-        <div className="bg-white rounded-xl border-2 border-gray-200 p-4">
+          <p className="text-xs text-gray-500 mt-1">Active, at or below threshold</p>
+        </button>
+        <button
+          type="button"
+          onClick={() => { setStockFilter('out'); setShowFilters(true); }}
+          className={`bg-white rounded-xl border-2 p-4 text-left cursor-pointer transition-colors ${stockFilter === 'out' ? 'border-red-400' : 'border-gray-200 hover:border-red-300'}`}
+        >
           <p className="text-sm text-gray-600 mb-1">Out of Stock</p>
           <p className="text-2xl font-bold text-red-700">{stats.outOfStock}</p>
-        </div>
+          <p className="text-xs text-gray-500 mt-1">Active products</p>
+        </button>
       </div>
+
+      {loadError && (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between gap-4">
+          <span>Could not load products: {loadError}</span>
+          <button onClick={fetchProducts} className="font-semibold underline cursor-pointer">Retry</button>
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
         <div className="p-6 border-b border-gray-200">
@@ -198,7 +364,7 @@ export default function ProductsPage() {
                 className="px-4 py-3 border-2 border-gray-300 text-gray-700 rounded-lg hover:border-gray-400 transition-colors font-medium whitespace-nowrap cursor-pointer"
               >
                 <i className="ri-filter-line mr-2"></i>
-                Filters
+                Filters{filtersActive ? ' (on)' : ''}
               </button>
               <select
                 value={sortBy}
@@ -232,31 +398,79 @@ export default function ProductsPage() {
 
           {showFilters && (
             <div className="mt-4 p-4 bg-gray-50 rounded-lg grid md:grid-cols-4 gap-4">
-              <select className="px-3 py-2 pr-8 border-2 border-gray-300 rounded-lg text-sm cursor-pointer">
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                aria-label="Filter by category"
+                className="px-3 py-2 pr-8 border-2 border-gray-300 rounded-lg text-sm cursor-pointer"
+              >
                 <option value="">All Categories</option>
-                {categories.map((cat: any) => <option key={cat.name} value={cat.name}>{cat.name}</option>)}
+                <option value="__none">Uncategorized</option>
+                {categories.map((cat: any) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
               </select>
-              <select className="px-3 py-2 pr-8 border-2 border-gray-300 rounded-lg text-sm cursor-pointer">
-                <option>All Status</option>
-                <option>Active</option>
-                <option>Draft</option>
-                <option>Archived</option>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                aria-label="Filter by status"
+                className="px-3 py-2 pr-8 border-2 border-gray-300 rounded-lg text-sm cursor-pointer"
+              >
+                <option value="">All Status</option>
+                <option value="active">Active</option>
+                <option value="draft">Draft</option>
+                <option value="archived">Archived</option>
               </select>
+              <select
+                value={stockFilter}
+                onChange={(e) => setStockFilter(e.target.value as 'all' | 'low' | 'out')}
+                aria-label="Filter by stock"
+                className="px-3 py-2 pr-8 border-2 border-gray-300 rounded-lg text-sm cursor-pointer"
+              >
+                <option value="all">All Stock Levels</option>
+                <option value="low">Low stock (active)</option>
+                <option value="out">Out of stock (active)</option>
+              </select>
+              {filtersActive && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="px-3 py-2 text-sm font-medium text-gray-700 underline cursor-pointer text-left"
+                >
+                  Clear filters
+                </button>
+              )}
             </div>
           )}
         </div>
 
         {selectedProducts.length > 0 && (
-          <div className="p-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+          <div className="p-4 bg-gray-50 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <p className="text-gray-800 font-semibold">
               {selectedProducts.length} product{selectedProducts.length > 1 ? 's' : ''} selected
-            </p>
-            <div className="flex items-center space-x-2">
               <button
-                onClick={handleBulkDelete}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
+                type="button"
+                onClick={() => setSelectedProducts([])}
+                className="ml-3 text-sm font-normal text-gray-600 underline cursor-pointer"
               >
-                Delete
+                Clear
+              </button>
+            </p>
+            <div className="flex items-center gap-2">
+              <select
+                value={bulkAction}
+                onChange={(e) => setBulkAction(e.target.value as BulkAction)}
+                aria-label="Bulk action"
+                className="px-3 py-2 pr-8 border-2 border-gray-300 rounded-lg text-sm cursor-pointer"
+              >
+                {(Object.keys(BULK_LABELS) as BulkAction[]).map((a) => (
+                  <option key={a} value={a}>{BULK_LABELS[a]}</option>
+                ))}
+              </select>
+              <button
+                onClick={handleBulkApply}
+                disabled={bulkWorking}
+                className={`px-4 py-2 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer disabled:opacity-60 ${bulkAction === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-900 hover:bg-gray-800'}`}
+              >
+                {bulkWorking ? 'Working...' : `Apply to ${selectedProducts.length}`}
               </button>
             </div>
           </div>
@@ -281,8 +495,9 @@ export default function ProductsPage() {
                   <th className="py-4 px-6">
                     <input
                       type="checkbox"
-                      checked={selectedProducts.length === products.length && products.length > 0}
+                      checked={allVisibleSelected}
                       onChange={handleSelectAll}
+                      aria-label="Select all products shown"
                       className="w-4 h-4 text-gray-900 border-gray-300 rounded focus:ring-gray-600 cursor-pointer"
                     />
                   </th>
@@ -324,10 +539,10 @@ export default function ProductsPage() {
                     <td className="py-4 px-4 font-semibold text-gray-900 whitespace-nowrap">GH₵ {product.price.toFixed(2)}</td>
                     <td className="py-4 px-4 text-gray-700">
                       {product.stock}
-                      {product.stock <= (product.metadata?.low_stock_threshold || 5) && product.stock > 0 && (
+                      {product.stock <= lowStockThreshold(product) && product.stock > 0 && (
                         <span className="ml-2 w-2 h-2 rounded-full bg-amber-500 inline-block" title="Low Stock"></span>
                       )}
-                      {product.stock === 0 && (
+                      {product.stock <= 0 && (
                         <span className="ml-2 w-2 h-2 rounded-full bg-red-500 inline-block" title="Out of Stock"></span>
                       )}
                     </td>
@@ -378,7 +593,7 @@ export default function ProductsPage() {
                 <h3 className="font-semibold text-gray-900 mb-1 line-clamp-2">{product.name}</h3>
                 <p className="text-sm text-gray-600 mb-2">{product.category}</p>
                 <div className="flex items-center justify-between mb-3">
-                  <p className="text-lg font-bold text-gray-900">GH₵ {product.price}</p>
+                  <p className="text-lg font-bold text-gray-900">GH₵ {product.price.toFixed(2)}</p>
                 </div>
                 <div className="flex items-center justify-between text-sm text-gray-600 mb-3 pb-3 border-b border-gray-200">
                   <span>Stock: {product.stock}</span>
@@ -404,7 +619,7 @@ export default function ProductsPage() {
 
         <div className="p-6 border-t border-gray-200 flex items-center justify-between">
           <p className="text-sm text-gray-500">
-            {filteredProducts.length === 0 ? 'No products' : `Showing ${filteredProducts.length} product${filteredProducts.length !== 1 ? 's' : ''}`}
+            {filteredProducts.length === 0 ? 'No products' : `Showing ${filteredProducts.length} of ${products.length} product${products.length !== 1 ? 's' : ''}`}
           </p>
         </div>
       </div>

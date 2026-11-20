@@ -4,16 +4,26 @@ import {
   signUpWithPassword,
   refreshSession,
   verifyAccessToken,
-  getUserById,
+  getUserForToken,
+  canChangePasswordWith,
+  signOutEverywhere,
   updateUserPassword,
   updateUserMetadata,
   resendSignupConfirmation,
   createRecoveryToken,
   verifyEmailToken,
+  type AuthFailure,
 } from "@/lib/db/auth";
 import { isPlainPostgres } from "@/lib/db/mode";
 import { sendPasswordReset, sendSignupConfirmation } from "@/lib/notifications";
-import { checkRateLimit, getClientIdentifier } from "@/lib/rate-limit";
+import {
+  checkRateLimit,
+  clearLoginFailures,
+  getClientIdentifier,
+  loginLockRemaining,
+  RATE_LIMITS,
+  recordLoginFailure,
+} from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -36,6 +46,22 @@ function gotrueError(message: string, status = 400, code = "invalid_request") {
     { error: code, error_code: code, error_description: message, msg: message, message },
     { status, headers: cors() }
   );
+}
+
+function failure(err: AuthFailure) {
+  return gotrueError(err.message, err.status, err.code);
+}
+
+/** Sign-in attempts per IP and per address (successes count too; failures also feed the lockout). */
+function loginRateLimited(req: NextRequest, email: string): NextResponse | null {
+  const ip = checkRateLimit(`auth-login-ip:${getClientIdentifier(req)}`, RATE_LIMITS.authLoginIp);
+  const addr = email ? checkRateLimit(`auth-login-email:${email}`, RATE_LIMITS.authLoginEmail) : { success: true };
+  if (ip.success && addr.success) return null;
+  return gotrueError("Too many requests. Please wait a minute and try again.", 429, "over_request_rate_limit");
+}
+
+function bearer(req: NextRequest): string {
+  return (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
 }
 
 function sessionResponse(session: {
@@ -109,13 +135,12 @@ export async function GET(
   const slug = path.join("/");
 
   if (slug === "user") {
-    const auth = req.headers.get("authorization") || "";
-    const token = auth.replace(/^Bearer\s+/i, "").trim();
-    if (!token) return gotrueError("No authorization header", 401, "no_authorization");
-    const verified = await verifyAccessToken(token);
-    if (!verified) return gotrueError("Invalid JWT", 401, "invalid_token");
-    const user = await getUserById(verified.userId);
-    if (!user) return gotrueError("User not found", 401, "user_not_found");
+    const token = bearer(req);
+    if (!token) return gotrueError("This endpoint requires a Bearer token", 401, "no_authorization");
+    // Invalid, expired, banned, deleted or revoked (signed out everywhere,
+    // password changed) sessions all answer like GoTrue's bad_jwt.
+    const user = await getUserForToken(token);
+    if (!user) return gotrueError("invalid JWT: unable to parse or verify signature", 403, "bad_jwt");
     return NextResponse.json(user, { headers: cors() });
   }
 
@@ -138,6 +163,8 @@ export async function GET(
       return NextResponse.redirect(failed.toString(), 303);
     }
 
+    // Proving inbox access (reset or confirmation link) lifts a sign-in lock.
+    if (session.user.email) clearLoginFailures(session.user.email);
     const target = new URL(redirectTo);
     target.hash = new URLSearchParams({
       access_token: session.access_token,
@@ -187,15 +214,24 @@ export async function POST(
       "password";
 
     if (grant === "password") {
-      const email = String(body.email || "");
+      const email = String(body.email || "").trim().toLowerCase();
       const password = String(body.password || "");
+      const limited = loginRateLimited(req, email);
+      if (limited) return limited;
+      // 10 wrong passwords for one address lock it for 15 minutes. Only
+      // failures count, and a correct password clears the count.
+      const lockedFor = loginLockRemaining(email);
+      if (lockedFor > 0) {
+        return gotrueError(
+          `Too many failed sign-in attempts. Try again in ${Math.ceil(lockedFor / 60)} minutes, or reset your password.`,
+          429,
+          "over_request_rate_limit"
+        );
+      }
       const { session, error } = await signInWithPassword(email, password);
-      if (error === "Email not confirmed") {
-        return gotrueError(error, 400, "email_not_confirmed");
-      }
-      if (error || !session) {
-        return gotrueError(error || "Invalid login credentials", 400, "invalid_credentials");
-      }
+      if (error?.code === "invalid_credentials") recordLoginFailure(email);
+      else if (!error || error.code === "email_not_confirmed") clearLoginFailures(email);
+      if (error || !session) return failure(error ?? { message: "Invalid login credentials", code: "invalid_credentials", status: 400 });
       return sessionResponse(session);
     }
 
@@ -203,7 +239,7 @@ export async function POST(
       const refresh = String(body.refresh_token || "");
       const { session, error } = await refreshSession(refresh);
       if (error || !session) {
-        return gotrueError(error || "Invalid refresh token", 400, "refresh_token_not_found");
+        return failure(error ?? { message: "Invalid Refresh Token", code: "refresh_token_not_found", status: 400 });
       }
       return sessionResponse(session);
     }
@@ -222,8 +258,7 @@ export async function POST(
       data: body.data || body.user_metadata || {},
     });
     if (error || !user) {
-      const weak = error?.startsWith("Password");
-      return gotrueError(error || "Signup failed", weak ? 422 : 400, weak ? "weak_password" : "validation_failed");
+      return failure(error ?? { message: "Signup failed", code: "validation_failed", status: 400 });
     }
     if (confirmToken) {
       const redirectTo = safeRedirect(req, url.searchParams.get("redirect_to"), "/auth/login?verified=1");
@@ -263,6 +298,15 @@ export async function POST(
   }
 
   if (slug === "logout") {
+    // supabase-js signOut() defaults to scope=global: end every session of
+    // the account (all devices) by bumping its session version. "local" and
+    // "others" only drop this browser's tokens. GoTrue answers 204 with no
+    // body, and supabase-js keeps the session if this errors, so never fail.
+    const scope = url.searchParams.get("scope") || "global";
+    const token = bearer(req);
+    if (scope === "global" && token) {
+      await signOutEverywhere(token).catch((e) => console.error("[auth] global sign-out failed:", e.message));
+    }
     // 204 must not include a body (NextResponse.json throws Invalid response status code 204)
     return new NextResponse(null, { status: 204, headers: cors() });
   }
@@ -283,29 +327,36 @@ export async function PUT(
     return gotrueError(`Unknown auth path: ${slug}`, 404);
   }
 
-  const auth = req.headers.get("authorization") || "";
-  const token = auth.replace(/^Bearer\s+/i, "").trim();
-  if (!token) return gotrueError("No authorization header", 401, "no_authorization");
-  const verified = await verifyAccessToken(token);
-  if (!verified) return gotrueError("Invalid JWT", 401, "invalid_token");
+  const token = bearer(req);
+  if (!token) return gotrueError("This endpoint requires a Bearer token", 401, "no_authorization");
+  const current = await getUserForToken(token);
+  if (!current) return gotrueError("invalid JWT: unable to parse or verify signature", 403, "bad_jwt");
 
   const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+  let user = current;
 
-  if (body.password) {
-    const { user, error } = await updateUserPassword(verified.userId, String(body.password));
-    if (error || !user) return gotrueError(error || "Update failed", 422, "weak_password");
-    return NextResponse.json(user, { headers: cors() });
+  if (body.password !== undefined) {
+    // supabase-js sends only the new password. Require a fresh sign-in (last
+    // 15 minutes) or a session opened from a password-reset email, so a
+    // borrowed or stolen session cannot take over the account.
+    const verified = await verifyAccessToken(token);
+    if (!verified || !canChangePasswordWith(verified.payload)) {
+      return gotrueError(
+        "For your security, please sign in again before changing your password.",
+        401,
+        "reauthentication_needed"
+      );
+    }
+    const res = await updateUserPassword(current.id, String(body.password));
+    if (res.error || !res.user) return failure(res.error ?? { message: "Update failed", code: "unexpected_failure", status: 500 });
+    user = res.user;
   }
 
   if (body.data || body.user_metadata) {
-    const { user, error } = await updateUserMetadata(
-      verified.userId,
-      body.data || body.user_metadata
-    );
-    if (error || !user) return gotrueError(error || "Update failed");
-    return NextResponse.json(user, { headers: cors() });
+    const res = await updateUserMetadata(current.id, body.data || body.user_metadata);
+    if (res.error || !res.user) return failure(res.error ?? { message: "Update failed", code: "unexpected_failure", status: 500 });
+    user = res.user;
   }
 
-  const user = await getUserById(verified.userId);
   return NextResponse.json(user, { headers: cors() });
 }

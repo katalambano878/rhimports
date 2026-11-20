@@ -5,6 +5,26 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
+type BellCounts = {
+  newOrders: number;
+  unpaidToday: number;
+  lowStock: number;
+  newMessages: number;
+  openTickets: number;
+  pendingReturns: number;
+  pendingReviews: number;
+};
+
+const BELL_SEEN_KEY = 'rnh_admin_bell_seen_at';
+
+function readBellSeen(): string | null {
+  try {
+    return localStorage.getItem(BELL_SEEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export default function AdminLayout({
   children,
 }: {
@@ -24,6 +44,11 @@ export default function AdminLayout({
   const [storeName, setStoreName] = useState('RNH Imports');
   const [storeLogo, setStoreLogo] = useState<string | null>(null);
 
+  // Header bell: real counts of things waiting for staff.
+  const [showBell, setShowBell] = useState(false);
+  const [bell, setBell] = useState<BellCounts | null>(null);
+  const [bellSeenAt, setBellSeenAt] = useState<string | null>(null);
+
   useEffect(() => {
     async function checkAuth() {
       const { data: { session } } = await supabase.auth.getSession();
@@ -35,7 +60,9 @@ export default function AdminLayout({
 
       if (!session) {
         setIsLoading(false);
-        router.push('/admin/login');
+        // Come back to this page after signing in.
+        const back = pathname && pathname !== '/admin' ? `?redirect=${encodeURIComponent(pathname)}` : '';
+        router.push(`/admin/login${back}`);
         return;
       }
 
@@ -77,11 +104,90 @@ export default function AdminLayout({
       if (showUserMenu && !target.closest('.user-menu-container')) {
         setShowUserMenu(false);
       }
+      if (showBell && !target.closest('.bell-menu-container')) {
+        setShowBell(false);
+      }
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowBell(false);
+        setShowUserMenu(false);
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showUserMenu]);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [showUserMenu, showBell]);
+
+  // Bell counts: cheap head-count queries, refreshed every 2 minutes.
+  useEffect(() => {
+    if (!isAuthenticated || !userRole) return;
+    let cancelled = false;
+
+    const count = async (q: PromiseLike<{ count: number | null; error: any }>) => {
+      const { count: n, error } = await q;
+      return error ? 0 : n || 0;
+    };
+
+    async function loadBell() {
+      const seen = readBellSeen();
+      // Ghana is on UTC all year, so "today" starts at 00:00Z.
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      const since = seen || today.toISOString();
+
+      const [newOrders, unpaidToday, newMessages, openTickets, pendingReturns, pendingReviews, stockRows] =
+        await Promise.all([
+          count(supabase.from('orders').select('id', { count: 'exact', head: true })
+            .eq('payment_status', 'paid').gt('created_at', since)),
+          count(supabase.from('orders').select('id', { count: 'exact', head: true })
+            .neq('payment_status', 'paid').not('status', 'in', '(cancelled,refunded)')
+            .gte('created_at', today.toISOString())),
+          count(supabase.from('contact_submissions').select('id', { count: 'exact', head: true })
+            .eq('status', 'new')),
+          count(supabase.from('support_tickets').select('id', { count: 'exact', head: true })
+            .in('status', ['open', 'in_progress'])),
+          count(supabase.from('return_requests').select('id', { count: 'exact', head: true })
+            .eq('status', 'pending')),
+          count(supabase.from('reviews').select('id', { count: 'exact', head: true })
+            .eq('status', 'pending')),
+          supabase.from('products').select('quantity, metadata')
+            .eq('track_quantity', true).neq('status', 'archived').lte('quantity', 100).limit(1000),
+        ]);
+
+      const lowStock = (stockRows.data || []).filter((p: any) => {
+        const t = Number(p.metadata?.low_stock_threshold);
+        return (p.quantity ?? 0) <= (Number.isFinite(t) && t > 0 ? t : 5);
+      }).length;
+
+      if (!cancelled) {
+        setBellSeenAt(seen);
+        setBell({ newOrders, unpaidToday, lowStock, newMessages, openTickets, pendingReturns, pendingReviews });
+      }
+    }
+
+    loadBell();
+    const timer = setInterval(loadBell, 120000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isAuthenticated, userRole]);
+
+  const markBellSeen = () => {
+    const now = new Date().toISOString();
+    try {
+      localStorage.setItem(BELL_SEEN_KEY, now);
+    } catch {
+      /* private mode: the count just won't reset */
+    }
+    setBellSeenAt(now);
+    setBell(prev => (prev ? { ...prev, newOrders: 0 } : prev));
+  };
 
   // Fetch Modules Effect
   useEffect(() => {
@@ -148,7 +254,7 @@ export default function AdminLayout({
       title: 'Orders',
       icon: 'ri-shopping-bag-line',
       path: '/admin/orders',
-      badge: ''
+      badge: bell?.unpaidToday ? String(bell.unpaidToday) : ''
     },
     {
       title: 'POS System',
@@ -173,7 +279,26 @@ export default function AdminLayout({
     {
       title: 'Reviews',
       icon: 'ri-chat-smile-2-line',
-      path: '/admin/reviews'
+      path: '/admin/reviews',
+      badge: bell?.pendingReviews ? String(bell.pendingReviews) : ''
+    },
+    {
+      title: 'Messages',
+      icon: 'ri-mail-line',
+      path: '/admin/messages',
+      badge: bell?.newMessages ? String(bell.newMessages) : ''
+    },
+    {
+      title: 'Support tickets',
+      icon: 'ri-customer-service-2-line',
+      path: '/admin/support',
+      badge: bell?.openTickets ? String(bell.openTickets) : ''
+    },
+    {
+      title: 'Returns',
+      icon: 'ri-arrow-go-back-line',
+      path: '/admin/returns',
+      badge: bell?.pendingReturns ? String(bell.pendingReturns) : ''
     },
     {
       title: 'Inventory',
@@ -217,7 +342,8 @@ export default function AdminLayout({
     {
       title: 'Modules',
       icon: 'ri-puzzle-line',
-      path: '/admin/modules'
+      path: '/admin/modules',
+      adminOnly: true
     },
     {
       title: 'Settings',
@@ -226,10 +352,9 @@ export default function AdminLayout({
     },
   ];
 
-  const visibleMenuItems = menuItems.filter(item => {
-    // @ts-ignore
+  const visibleMenuItems = (menuItems as Array<typeof menuItems[number] & { moduleId?: string; adminOnly?: boolean; badge?: string; exact?: boolean }>).filter(item => {
+    if (item.adminOnly && userRole !== 'admin') return false;
     if (!item.moduleId) return true;
-    // @ts-ignore
     return enabledModules.includes(item.moduleId);
   });
 
@@ -325,10 +450,63 @@ export default function AdminLayout({
             </button>
 
             <div className="flex items-center space-x-2 lg:space-x-4">
-              <button className="relative w-10 h-10 flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer">
-                <i className="ri-notification-3-line text-xl"></i>
-                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-              </button>
+              {(() => {
+                const items = bell ? [
+                  { n: bell.newOrders, label: bellSeenAt ? 'new paid orders since you last checked' : 'paid orders today', href: '/admin/orders', icon: 'ri-shopping-bag-line' },
+                  { n: bell.unpaidToday, label: 'orders today still awaiting payment', href: '/admin/orders', icon: 'ri-time-line' },
+                  { n: bell.pendingReviews, label: 'reviews waiting for approval', href: '/admin/reviews', icon: 'ri-chat-smile-2-line' },
+                  { n: bell.newMessages, label: 'new contact messages', href: '/admin/messages', icon: 'ri-mail-line' },
+                  { n: bell.openTickets, label: 'open support tickets', href: '/admin/support', icon: 'ri-customer-service-2-line' },
+                  { n: bell.pendingReturns, label: 'return requests to review', href: '/admin/returns', icon: 'ri-arrow-go-back-line' },
+                  { n: bell.lowStock, label: 'products low on stock', href: '/admin/inventory', icon: 'ri-stack-line' },
+                ].filter(i => i.n > 0) : [];
+                // Low stock is listed but does not light the dot on its own: it rarely clears the same day.
+                const hasAction = !!bell && (bell.newOrders + bell.unpaidToday + bell.newMessages + bell.openTickets + bell.pendingReturns + bell.pendingReviews) > 0;
+                return (
+                  <div className="relative bell-menu-container">
+                    <button
+                      onClick={() => setShowBell(v => !v)}
+                      aria-label={hasAction ? 'Notifications (items waiting)' : 'Notifications'}
+                      aria-expanded={showBell}
+                      aria-haspopup="true"
+                      className="relative w-10 h-10 flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <i className="ri-notification-3-line text-xl"></i>
+                      {hasAction && <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>}
+                    </button>
+                    {showBell && (
+                      <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-20">
+                        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                          <p className="text-sm font-semibold text-gray-900">Waiting for you</p>
+                          {bell && bell.newOrders > 0 && (
+                            <button onClick={markBellSeen} className="text-xs text-gray-700 underline hover:text-gray-900 cursor-pointer">Mark orders seen</button>
+                          )}
+                        </div>
+                        {!bell ? (
+                          <p className="px-4 py-4 text-sm text-gray-500">Loading...</p>
+                        ) : items.length === 0 ? (
+                          <p className="px-4 py-4 text-sm text-gray-500">Nothing needs attention right now.</p>
+                        ) : (
+                          <ul className="divide-y divide-gray-100">
+                            {items.map(i => (
+                              <li key={i.label}>
+                                <Link
+                                  href={i.href}
+                                  onClick={() => setShowBell(false)}
+                                  className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-sm text-gray-700"
+                                >
+                                  <i className={`${i.icon} text-lg text-gray-500`}></i>
+                                  <span><span className="font-semibold text-gray-900">{i.n}</span> {i.label}</span>
+                                </Link>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="relative user-menu-container">
                 <button

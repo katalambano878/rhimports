@@ -61,6 +61,9 @@ export function getSharedPool(): Pool {
         ? { rejectUnauthorized: false }
         : undefined,
   });
+  // An idle connection the server drops (restart, maintenance) must not take
+  // the process down; the pool replaces it on the next query.
+  _pool.on("error", (e) => console.error("[db] idle connection error:", e.message));
   _pool.on("connect", (client) => {
     const ms = Math.max(
       1000,
@@ -93,4 +96,43 @@ export async function query<T = any>(
   const pool = getPool();
   const res = await pool.query(text, params as any[]);
   return { rows: res.rows as T[], rowCount: res.rowCount ?? 0 };
+}
+
+/** True while running inside a `withTransaction` / RLS request transaction. */
+export function inTransaction(): boolean {
+  return !!scopedClient.getStore();
+}
+
+/** The connection queries run on right now: the bound transaction's client, else the pool. */
+export function getExecutor(): Pick<Pool, "query"> {
+  return getPool();
+}
+
+/**
+ * Run `fn` in one database transaction on a single pooled connection, as the
+ * owning app role (service). Every query issued inside `fn` — `query()`,
+ * `createServerSupabase('service')` builders and rpc calls — runs on that
+ * connection. Commits when `fn` resolves, rolls back when it throws. Nested
+ * calls (or a call inside a browser RLS request) reuse the outer transaction.
+ *
+ * The compat builder reports query failures as `{ error }` instead of
+ * throwing: callers must throw on `error` to get a rollback. A failed
+ * statement aborts the whole transaction; use
+ * `query("SAVEPOINT x")` / `query("ROLLBACK TO SAVEPOINT x")` around a step
+ * that is allowed to fail.
+ */
+export async function withTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  if (scopedClient.getStore()) return fn();
+  const client = await getSharedPool().connect();
+  try {
+    await client.query("BEGIN");
+    const result = await runWithClient(client, fn);
+    await client.query("COMMIT");
+    return result;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }

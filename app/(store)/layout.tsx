@@ -17,7 +17,7 @@ const PWAInstaller = dynamic(() => import('@/components/PWAInstaller'), { ssr: f
 // const PushNotificationManager = dynamic(() => import('@/components/PushNotificationManager'), { ssr: false });
 const OfflineIndicator = dynamic(() => import('@/components/OfflineIndicator'), { ssr: false });
 const NetworkStatusMonitor = dynamic(() => import('@/components/NetworkStatusMonitor'), { ssr: false });
-const UpdatePrompt = dynamic(() => import('@/components/UpdatePrompt'), { ssr: false });
+const CookieConsent = dynamic(() => import('@/components/CookieConsent'), { ssr: false });
 const LiveSalesNotification = dynamic(() => import('@/components/LiveSalesNotification'), { ssr: false });
 const PreorderPopup = dynamic(() => import('@/components/PreorderPopup'), { ssr: false });
 const WhatsAppButton = dynamic(() => import('@/components/WhatsAppButton'), { ssr: false });
@@ -43,15 +43,16 @@ export default function StoreLayout({
         </ErrorBoundary>
         <Footer />
         <MobileBottomNav />
+        {/* Renders only for signed-in customers; guests are never timed out. */}
         <SessionTimeoutWarning />
         <PWAPrompt />
         {/* <PushNotificationManager /> */}
         <OfflineIndicator />
         <NetworkStatusMonitor />
-        <UpdatePrompt />
         <LiveSalesNotification />
         <PreorderPopup />
         <WhatsAppButton />
+        <CookieConsent />
       </div>
     </CMSProvider>
   );

@@ -74,3 +74,45 @@ export const FK_MAP: Record<string, FkEdge[]> = {
     { column: "product_id", foreignTable: "products", foreignColumn: "id" },
   ],
 };
+
+/**
+ * Every table/view in the public schema (from the live schema dump,
+ * 2026-11). The browser data API (/rest/v1) only touches these, top-level or
+ * embedded: anything else (pg_roles, pg_settings, auth.*, storage.*) is
+ * refused before any SQL runs. Add new public tables here when a migration
+ * creates them, or the browser cannot reach them.
+ */
+export const PUBLIC_TABLES: ReadonlySet<string> = new Set([
+  "addresses",
+  "audit_logs",
+  "banners",
+  "blog_posts",
+  "cart_items",
+  "categories",
+  "cms_content",
+  "contact_submissions",
+  "coupons",
+  "customers",
+  "navigation_items",
+  "navigation_menus",
+  "newsletter_subscribers",
+  "notifications",
+  "order_items",
+  "order_status_history",
+  "orders",
+  "pages",
+  "product_images",
+  "product_variants",
+  "products",
+  "profiles",
+  "return_items",
+  "return_requests",
+  "review_images",
+  "reviews",
+  "site_settings",
+  "store_modules",
+  "store_settings",
+  "support_messages",
+  "support_tickets",
+  "wishlist_items",
+]);

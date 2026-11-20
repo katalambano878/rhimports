@@ -23,6 +23,9 @@ export default function Footer() {
     { label: 'Services', href: '/service' },
     { label: 'About', href: '/about' },
     { label: 'Contact', href: '/contact' },
+    { label: 'Track Order', href: '/order-tracking' },
+    { label: 'Help Centre', href: '/help' },
+    { label: 'FAQs', href: '/faqs' },
     { label: 'Shipping', href: '/shipping' },
     { label: 'Returns', href: '/returns' },
     { label: 'Refund Policy', href: '/refund-policy' },
@@ -150,8 +153,12 @@ export default function Footer() {
                 <span>{contactAddress}</span>
               </li>
               <li className="flex items-start gap-3">
-                <i className="ri-time-line mt-0.5 shrink-0"></i>
+                <i className="ri-time-line mt-0.5 shrink-0" aria-hidden="true"></i>
                 <span>{contactHours}</span>
+              </li>
+              <li className="flex items-start gap-3">
+                <i className="ri-secure-payment-line mt-0.5 shrink-0" aria-hidden="true"></i>
+                <span>Pay online: mobile money or card with Hubtel, or mobile money with Moolre. No cash on delivery.</span>
               </li>
             </ul>
           </div>

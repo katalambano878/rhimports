@@ -1,10 +1,17 @@
 import { NextResponse } from 'next/server';
 import { createServerSupabase } from '@/lib/supabase-server';
+import { verifyAuth } from '@/lib/auth';
 import { FASHION_CATEGORY_SLUG, FASHION_HERO_IMAGE } from '@/lib/fashion';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST() {
+/**
+ * POST /api/storefront/ensure-fashion-category
+ * Anyone: reports whether the Fashion category exists (never writes).
+ * Admin/staff bearer: creates it when it is missing.
+ * 200 → { success, created, category | null }
+ */
+export async function POST(request: Request) {
   const supabase = createServerSupabase('service');
 
   const { data: existing, error: lookupError } = await supabase
@@ -14,11 +21,20 @@ export async function POST() {
     .maybeSingle();
 
   if (lookupError) {
-    return NextResponse.json({ success: false, message: lookupError.message }, { status: 500 });
+    console.error('[ensure-fashion-category] lookup failed:', lookupError.message);
+    return NextResponse.json({ success: false, message: 'Could not check the category' }, { status: 500 });
   }
 
   if (existing) {
     return NextResponse.json({ success: true, created: false, category: existing });
+  }
+
+  // Creating catalogue data is a staff action.
+  const auth = request.headers.get('authorization')
+    ? await verifyAuth(request, { requireRole: ['admin', 'staff'] })
+    : { authenticated: false };
+  if (!auth.authenticated) {
+    return NextResponse.json({ success: true, created: false, category: null });
   }
 
   const { data, error } = await supabase
@@ -36,8 +52,13 @@ export async function POST() {
     .single();
 
   if (error) {
-    return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+    console.error('[ensure-fashion-category] insert failed:', error.message);
+    return NextResponse.json({ success: false, message: 'Could not create the category' }, { status: 500 });
   }
 
   return NextResponse.json({ success: true, created: true, category: data });
+}
+
+export async function GET(request: Request) {
+  return POST(new Request(request.url, { method: 'POST' }));
 }

@@ -3,7 +3,7 @@ import { verifyRecaptcha } from '@/lib/recaptcha';
 
 export async function POST(request: Request) {
     try {
-        const { token, action } = await request.json();
+        const { token, action } = await request.json().catch(() => ({} as any));
 
         if (!token) {
             return NextResponse.json(
@@ -12,7 +12,10 @@ export async function POST(request: Request) {
             );
         }
 
-        const result = await verifyRecaptcha(token, action);
+        if (typeof token !== 'string' || token.length > 4000) {
+            return NextResponse.json({ success: false, error: 'Invalid reCAPTCHA token' }, { status: 400 });
+        }
+        const result = await verifyRecaptcha(token, typeof action === 'string' ? action : undefined);
 
         if (!result.success) {
             return NextResponse.json(

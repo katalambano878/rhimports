@@ -1,30 +1,40 @@
 'use client';
 
 import { useState, Suspense } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { useRecaptcha } from '@/hooks/useRecaptcha';
 
 function AdminLoginForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const urlError = searchParams?.get('error');
+  const sessionExpired = urlError === 'session_expired' || searchParams?.get('expired') === '1';
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const { getToken, verifying } = useRecaptcha();
+
+  // Only follow a redirect back into the dashboard: a same-site path under /admin,
+  // never a protocol-relative (//host) or absolute URL, and never the login page itself.
+  const safeRedirect = (): string => {
+    const raw = searchParams?.get('redirect') || '';
+    if (!raw.startsWith('/admin') || raw.startsWith('//') || raw.includes('\\')) return '/admin';
+    try {
+      const url = new URL(raw, window.location.origin);
+      const inAdmin = url.pathname === '/admin' || url.pathname.startsWith('/admin/');
+      if (url.origin !== window.location.origin || !inAdmin || url.pathname.startsWith('/admin/login')) return '/admin';
+      return url.pathname + url.search + url.hash;
+    } catch {
+      return '/admin';
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setIsLoading(true);
-
-    // reCAPTCHA when configured; if it fails we still attempt login so misconfiguration doesn't lock you out
-    await getToken('admin_login');
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -35,15 +45,20 @@ function AdminLoginForm() {
       if (error) throw error;
 
       if (data.session) {
-        // Full page navigation so the admin layout sees the new session (avoids client-side race)
-        window.location.href = '/admin';
+        // Full page navigation so the server-side /admin check sees the new
+        // session cookie and the layout starts with the new session.
+        window.location.assign(safeRedirect());
         return;
       }
     } catch (err: any) {
       const msg = err?.message || 'Login failed';
-      setError(msg);
-      if (err?.message?.toLowerCase().includes('email') && err?.message?.toLowerCase().includes('confirm')) {
-        setError(`${msg} Check your inbox for the confirmation link, or turn off "Confirm email" in Supabase → Authentication → Providers → Email.`);
+      const lower = msg.toLowerCase();
+      if (lower.includes('email') && lower.includes('confirm')) {
+        setError(`${msg} Check your inbox for the confirmation link, or ask an admin to confirm your account.`);
+      } else if (lower.includes('invalid login') || lower.includes('invalid credentials')) {
+        setError('Wrong email or password.');
+      } else {
+        setError(msg);
       }
     } finally {
       setIsLoading(false);
@@ -62,13 +77,19 @@ function AdminLoginForm() {
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+          {sessionExpired && !error && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start space-x-3" role="status">
+              <i className="ri-time-line text-amber-600 text-xl mt-0.5"></i>
+              <p className="text-amber-800 text-sm">Your session expired, please sign in again.</p>
+            </div>
+          )}
           {urlError === 'unauthorized' && (
             <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start space-x-3">
               <i className="ri-shield-user-line text-amber-600 text-xl mt-0.5"></i>
               <div>
                 <p className="text-amber-800 font-semibold">No admin access</p>
                 <p className="text-amber-700 text-sm mt-1">
-                  Your account does not have admin or staff rights. If you should have access, an existing admin must set your role in Supabase (Dashboard → Table Editor → profiles → set <code className="bg-amber-100 px-1 rounded">role</code> to <code className="bg-amber-100 px-1 rounded">admin</code> or <code className="bg-amber-100 px-1 rounded">staff</code>).
+                  Your account does not have dashboard access. If you work here, ask an admin to give your account staff access, then sign in again.
                 </p>
               </div>
             </div>
@@ -79,7 +100,7 @@ function AdminLoginForm() {
               <div>
                 <p className="text-amber-800 font-semibold">Profile not found</p>
                 <p className="text-amber-700 text-sm mt-1">
-                  Your account exists but has no profile row. Ask an administrator to create your profile in the database or contact support.
+                  Your account was found but its staff profile is missing. Ask an admin to give your account staff access, then sign in again.
                 </p>
               </div>
             </div>
@@ -96,12 +117,14 @@ function AdminLoginForm() {
 
           <form onSubmit={handleLogin} className="space-y-5">
             <div>
-              <label className="block text-sm font-semibold text-gray-900 mb-2">
+              <label htmlFor="admin-email" className="block text-sm font-semibold text-gray-900 mb-2">
                 Email Address
               </label>
               <div className="relative">
                 <i className="ri-mail-line absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-lg"></i>
                 <input
+                  id="admin-email"
+                  autoComplete="email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -113,12 +136,14 @@ function AdminLoginForm() {
             </div>
 
             <div>
-              <label className="block text-sm font-semibold text-gray-900 mb-2">
+              <label htmlFor="admin-password" className="block text-sm font-semibold text-gray-900 mb-2">
                 Password
               </label>
               <div className="relative">
                 <i className="ri-lock-line absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-lg"></i>
                 <input
+                  id="admin-password"
+                  autoComplete="current-password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -130,6 +155,7 @@ function AdminLoginForm() {
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 w-5 h-5 flex items-center justify-center"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   <i className={`${showPassword ? 'ri-eye-off-line' : 'ri-eye-line'} text-lg`}></i>
                 </button>
@@ -138,13 +164,13 @@ function AdminLoginForm() {
 
             <button
               type="submit"
-              disabled={isLoading || verifying}
+              disabled={isLoading}
               className="w-full bg-primary hover:bg-primary text-white py-3 rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
             >
-              {isLoading || verifying ? (
+              {isLoading ? (
                 <span className="flex items-center justify-center space-x-2">
                   <i className="ri-loader-4-line animate-spin"></i>
-                  <span>{verifying ? 'Verifying...' : 'Signing in...'}</span>
+                  <span>Signing in...</span>
                 </span>
               ) : (
                 'Sign In'

@@ -12,6 +12,16 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { HERO_SLIDES_HOME } from '@/lib/hero-images';
 import { DEFAULT_CONTACT_PHONE } from '@/lib/contact';
 import FashionHomeBanner from '@/components/FashionHomeBanner';
+import { sellableStock, isPreorderProduct } from '@/context/CartContext';
+
+// Explicit columns: never send cost fields to the browser.
+const HOME_PRODUCT_COLUMNS =
+  'id, name, slug, price, compare_at_price, quantity, track_quantity, continue_selling, moq, featured, ' +
+  'rating_avg, review_count, metadata, brand, vendor, created_at, ' +
+  'product_variants(id, name, price, quantity, option1, option2), product_images(url, position)';
+
+const NO_IMAGE =
+  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M30 65l12-15 10 12 8-9 10 12z%27 fill=%27%23d1d5db%27/%3E%3C/svg%3E";
 
 // ── Static data (no DB dependency) ─────────────────────────────────────────
 
@@ -66,33 +76,39 @@ export default function Home() {
   const [featuredProducts, setFeaturedProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [heroIndex, setHeroIndex] = useState(0);
 
   // ── Fetch data ─────────────────────────────────────────────────────
   useEffect(() => {
     async function fetchData() {
+      setLoading(true);
+      setLoadError(false);
       try {
         const [productsRes, categoriesRes] = await Promise.all([
           supabase.from('products')
-            .select('*, product_variants(*), product_images(*)')
+            .select(HOME_PRODUCT_COLUMNS)
             .eq('status', 'active').eq('featured', true)
             .order('created_at', { ascending: false }).limit(100),
           supabase.from('categories')
             .select('id, name, slug, image_url, metadata')
             .eq('status', 'active').order('name'),
         ]);
+        if (productsRes.error) throw productsRes.error;
         setFeaturedProducts(shuffleProducts(productsRes.data || []));
         const all = categoriesRes.data || [];
         const featured = all.filter((c: any) => c.metadata?.featured === true);
         setCategories((featured.length ? featured : all).slice(0, 6));
       } catch (err) {
         console.error('Homepage fetch error:', err);
+        setLoadError(true);
       } finally {
         setLoading(false);
       }
     }
     fetchData();
-  }, []);
+  }, [reloadKey]);
 
   // ── Hero slideshow ─────────────────────────────────────────────────
   const HERO_SLIDES = HERO_SLIDES_HOME;
@@ -126,7 +142,8 @@ export default function Home() {
     const hasVariants = variants.length > 0;
     const minVariantPrice = hasVariants ? Math.min(...variants.map((v: any) => v.price || product.price)) : undefined;
     const totalStock = hasVariants ? variants.reduce((s: number, v: any) => s + (v.quantity || 0), 0) : 0;
-    const effectiveStock = hasVariants ? totalStock : product.quantity;
+    const effectiveStock = sellableStock(hasVariants ? totalStock : product.quantity, product);
+    const images = [...(product.product_images || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
     const colorVariants: ColorVariant[] = [];
     const seenColors = new Set<string>();
     for (const c of (product.metadata?.product_options?.color?.values || []) as string[]) {
@@ -150,14 +167,14 @@ export default function Home() {
         slug={product.slug}
         name={product.name}
         price={product.price}
-        originalPrice={product.compare_at_price}
-        image={product.product_images?.[0]?.url || 'https://via.placeholder.com/400x500'}
-        rating={product.rating_avg || 5}
+        originalPrice={product.compare_at_price ?? undefined}
+        image={images[0]?.url || NO_IMAGE}
+        rating={product.rating_avg || 0}
         reviewCount={product.review_count || 0}
         badge={product.featured ? 'Featured' : undefined}
-        inStock={effectiveStock > 0}
-        isPreorder={product.metadata?.is_preorder ?? !!product.metadata?.preorder_shipping}
-        maxStock={effectiveStock || 50}
+        inStock={effectiveStock >= (product.moq || 1)}
+        isPreorder={isPreorderProduct(product)}
+        maxStock={effectiveStock}
         moq={product.moq || 1}
         hasVariants={hasVariants}
         minVariantPrice={minVariantPrice}
@@ -307,6 +324,18 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          ) : loadError ? (
+            <div className="text-center py-20" role="alert">
+              <p className="text-gray-700 font-semibold mb-2">Couldn&apos;t load products</p>
+              <p className="text-gray-500 text-sm mb-6">Check your connection and try again.</p>
+              <button
+                type="button"
+                onClick={() => setReloadKey((k) => k + 1)}
+                className="inline-flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-full font-bold text-sm hover:bg-[#0F1A47] transition-all"
+              >
+                Try again
+              </button>
+            </div>
           ) : featuredProducts.length > 0 ? (
             <AnimatedGrid className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-6 lg:gap-8">
               {featuredProducts.map(buildCard)}
@@ -363,7 +392,8 @@ export default function Home() {
                 <Link href={`/shop?category=${cat.slug}`} key={cat.id} className="group block">
                   <div className="aspect-square rounded-2xl overflow-hidden relative shadow-sm hover:shadow-xl transition-all duration-500 bg-gray-100">
                     <Image
-                      src={cat.image || cat.image_url || `https://via.placeholder.com/600x800?text=${encodeURIComponent(cat.name)}`}
+                      src={cat.image || cat.image_url || NO_IMAGE}
+                      unoptimized={!(cat.image || cat.image_url)}
                       alt={cat.name}
                       fill
                       className="object-cover transition-transform duration-700 group-hover:scale-105"

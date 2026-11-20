@@ -1,19 +1,142 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+
+type Audience = 'all' | 'newsletter';
+
+const PAGE_SIZE = 1000;
+
+/** Page through a query: the API caps a single response at 1000 rows. */
+async function fetchAllPaged<T>(build: () => any): Promise<T[]> {
+    const all: T[] = [];
+    for (let from = 0; ; from += PAGE_SIZE) {
+        const { data, error } = await build().range(from, from + PAGE_SIZE - 1);
+        if (error) throw error;
+        all.push(...((data || []) as T[]));
+        if (!data || data.length < PAGE_SIZE) break;
+    }
+    return all;
+}
+type Channels = { email: boolean; sms: boolean };
+type Recipient = { email: string | null; phone: string | null; name: string | null };
+
+const AUDIENCES: { value: Audience; label: string; note: string }[] = [
+    { value: 'all', label: 'All customers', note: 'Every customer with an email address or phone number.' },
+    { value: 'newsletter', label: 'Newsletter subscribers', note: 'People who signed up to the newsletter and have not unsubscribed. Email only.' },
+];
+
+/** Walk-in POS sales store made-up addresses; never send mail to them. */
+function isPlaceholderEmail(email: string) {
+    const e = email.trim().toLowerCase();
+    return !e.includes('@') || e.endsWith('@pos.local') || e.endsWith('@store.local');
+}
+
+const normalizePhone = (p: string) => p.replace(/[\s\-\(\)\.]+/g, '').replace(/^00/, '+');
+
+/** Build the deduplicated recipient list for an audience and the chosen channels. */
+async function loadRecipients(audience: Audience, channels: Channels): Promise<Recipient[]> {
+    const recipients: Recipient[] = [];
+
+    if (audience === 'newsletter') {
+        if (!channels.email) return [];
+        const subscribers = await fetchAllPaged<{ email: string | null }>(() =>
+            supabase
+                .from('newsletter_subscribers')
+                .select('email')
+                .is('unsubscribed_at', null)
+                .order('email', { ascending: true })
+        );
+        const seen = new Set<string>();
+        for (const row of subscribers) {
+            const email = (row.email || '').trim().toLowerCase();
+            if (!email || isPlaceholderEmail(email) || seen.has(email)) continue;
+            seen.add(email);
+            recipients.push({ email, phone: null, name: null });
+        }
+        return recipients;
+    }
+
+    // All customers (includes secondary contacts). Page through rows — the API caps bare selects at 1000.
+    const customers = await fetchAllPaged<{
+        email: string | null;
+        phone: string | null;
+        full_name: string | null;
+        secondary_phone: string | null;
+        secondary_email: string | null;
+    }>(() =>
+        supabase
+            .from('customers')
+            .select('email, phone, full_name, secondary_phone, secondary_email')
+            .order('id', { ascending: true })
+    );
+
+    const seenPhones = new Set<string>();
+    const seenEmails = new Set<string>();
+    for (const c of customers) {
+        const phones = [c.phone, c.secondary_phone]
+            .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+            .map((p) => normalizePhone(p));
+        const emails = [c.email, c.secondary_email]
+            .filter((e): e is string => typeof e === 'string' && e.trim().length > 0)
+            .map((e) => e.toLowerCase().trim())
+            .filter((e) => !isPlaceholderEmail(e));
+
+        const uniquePhone = channels.sms ? phones.find((p) => !seenPhones.has(p)) || null : null;
+        const uniqueEmail = channels.email ? emails.find((e) => !seenEmails.has(e)) || null : null;
+
+        // Mark all their contact info as seen so other customers don't repeat it.
+        phones.forEach((p) => seenPhones.add(p));
+        emails.forEach((e) => seenEmails.add(e));
+
+        if (!uniqueEmail && !uniquePhone) continue;
+        recipients.push({ email: uniqueEmail, phone: uniquePhone, name: c.full_name });
+    }
+    return recipients;
+}
 
 export default function NotificationsPage() {
     const [loading, setLoading] = useState(false);
     const [success, setSuccess] = useState('');
     const [error, setError] = useState('');
+    const [preview, setPreview] = useState<{ email: number; sms: number } | null>(null);
+    const [previewError, setPreviewError] = useState('');
 
-    const [form, setForm] = useState({
+    const [form, setForm] = useState<{ subject: string; message: string; channels: Channels; audience: Audience }>({
         subject: '',
         message: '',
         channels: { email: true, sms: false },
         audience: 'all'
     });
+
+    const smsAvailable = form.audience !== 'newsletter';
+    const effectiveChannels: Channels = { email: form.channels.email, sms: form.channels.sms && smsAvailable };
+
+    // Real recipient count for the chosen audience and channels, before sending.
+    useEffect(() => {
+        let cancelled = false;
+        setPreview(null);
+        setPreviewError('');
+        if (!effectiveChannels.email && !effectiveChannels.sms) {
+            setPreview({ email: 0, sms: 0 });
+            return;
+        }
+        loadRecipients(form.audience, effectiveChannels)
+            .then((list) => {
+                if (cancelled) return;
+                setPreview({
+                    email: list.filter((r) => r.email).length,
+                    sms: list.filter((r) => r.phone).length,
+                });
+            })
+            .catch((err) => {
+                if (!cancelled) setPreviewError(err?.message || 'Could not count recipients');
+            });
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- recount only when audience or channels change
+    }, [form.audience, effectiveChannels.email, effectiveChannels.sms]);
 
     const handleSend = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -22,74 +145,34 @@ export default function NotificationsPage() {
         setSuccess('');
 
         try {
-            // 1. Get auth token for admin verification
             const { data: { session } } = await supabase.auth.getSession();
             if (!session?.access_token) {
                 throw new Error('You must be logged in as admin to send campaigns');
             }
 
-            // 2. Fetch Recipients from the customers table (includes secondary contacts)
-            const { data: customers, error: fetchError } = await supabase
-                .from('customers')
-                .select('email, phone, full_name, secondary_phone, secondary_email');
+            const recipients = await loadRecipients(form.audience, effectiveChannels);
+            const emailCount = recipients.filter((r) => r.email).length;
+            const smsCount = recipients.filter((r) => r.phone).length;
+            if (emailCount + smsCount === 0) throw new Error('No recipients found with valid contact info for this audience');
 
-            if (fetchError) throw fetchError;
-
-            // Build recipients with deduplication
-            const seenPhones = new Set<string>();
-            const seenEmails = new Set<string>();
-
-            const normalizePhone = (p: string) => p.replace(/[\s\-\(\)\.]+/g, '').replace(/^00/, '+');
-
-            const recipients: any[] = [];
-            for (const c of (customers || [])) {
-                const phones = [c.phone, c.secondary_phone].filter(Boolean).map((p: string) => normalizePhone(p));
-                const emails = [c.email, c.secondary_email].filter(Boolean).map((e: string) => e.toLowerCase().trim());
-
-                // Pick first unique phone for this customer
-                const uniquePhone = phones.find(p => !seenPhones.has(p)) || null;
-                if (uniquePhone) seenPhones.add(uniquePhone);
-
-                // Pick first unique email for this customer
-                const uniqueEmail = emails.find(e => !seenEmails.has(e)) || null;
-                if (uniqueEmail) seenEmails.add(uniqueEmail);
-
-                // Also mark all their contact info as seen to avoid duplicates from other customers
-                phones.forEach(p => seenPhones.add(p));
-                emails.forEach(e => seenEmails.add(e));
-
-                const recipient = { email: uniqueEmail, phone: uniquePhone, name: c.full_name };
-
-                // Filter based on selected channels
-                if (form.channels.sms && !form.channels.email && !recipient.phone) continue;
-                if (form.channels.email && !form.channels.sms && !recipient.email) continue;
-                if (!recipient.email && !recipient.phone) continue;
-
-                recipients.push(recipient);
-            }
-
-            if (recipients.length === 0) throw new Error('No recipients found with valid contact info');
-
-            // Confirm before sending
-            const smsCount = recipients.filter(r => r.phone).length;
-            const emailCount = recipients.filter(r => r.email).length;
-            const summary = [];
-            if (form.channels.sms) summary.push(`${smsCount} SMS (deduplicated)`);
-            if (form.channels.email) summary.push(`${emailCount} emails`);
-
-            if (!window.confirm(`This will send ${summary.join(' and ')} to your customers. Continue?`)) {
+            const audienceLabel = AUDIENCES.find((a) => a.value === form.audience)?.label.toLowerCase() || 'customers';
+            const summary: string[] = [];
+            if (effectiveChannels.email) summary.push(`${emailCount} email${emailCount === 1 ? '' : 's'}`);
+            if (effectiveChannels.sms) summary.push(`${smsCount} SMS`);
+            if (!window.confirm(`This will send ${summary.join(' and ')} to ${audienceLabel}. Continue?`)) {
                 setLoading(false);
                 return;
             }
 
-            // 3. Send in batches to avoid API timeout
+            // Send in batches to avoid API timeouts.
             const BATCH_SIZE = 50;
-            let totalEmail = 0;
-            let totalSms = 0;
-            let totalErrors = 0;
+            const sent = { email: 0, sms: 0 };
+            const failed = { email: 0, sms: 0 };
+            let batchError = '';
 
             for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
                 const batch = recipients.slice(i, i + BATCH_SIZE);
+                const batchNo = Math.floor(i / BATCH_SIZE) + 1;
 
                 const res = await fetch('/api/notifications', {
                     method: 'POST',
@@ -103,39 +186,37 @@ export default function NotificationsPage() {
                             recipients: batch,
                             subject: form.subject,
                             message: form.message,
-                            channels: form.channels,
+                            channels: effectiveChannels,
                         }
                     })
                 });
 
-                // Handle non-JSON responses (e.g. timeouts, server errors)
-                let data;
                 const contentType = res.headers.get('content-type') || '';
-                if (contentType.includes('application/json')) {
-                    data = await res.json();
-                } else {
-                    const text = await res.text();
-                    throw new Error(`Server error (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${text.slice(0, 100)}`);
+                const data = contentType.includes('application/json') ? await res.json() : null;
+                if (!res.ok || !data) {
+                    // Stop here: earlier batches already went out, so report what was sent.
+                    batchError = `Batch ${batchNo} failed: ${data?.error || `server error ${res.status}`}. Later batches were not sent.`;
+                    break;
                 }
-
-                if (!res.ok) throw new Error(data.error || 'Failed to send');
-
-                // Parse results from response
-                const msg = data.message || '';
-                const emailMatch = msg.match(/(\d+) emails/);
-                const smsMatch = msg.match(/(\d+) SMS/);
-                const errorMatch = msg.match(/(\d+) failed/);
-                if (emailMatch) totalEmail += parseInt(emailMatch[1]);
-                if (smsMatch) totalSms += parseInt(smsMatch[1]);
-                if (errorMatch) totalErrors += parseInt(errorMatch[1]);
+                sent.email += Number(data.sent?.email || 0);
+                sent.sms += Number(data.sent?.sms || 0);
+                failed.email += Number(data.failed?.email || 0);
+                failed.sms += Number(data.failed?.sms || 0);
             }
 
-            const resultParts = [];
-            if (totalEmail > 0) resultParts.push(`${totalEmail} emails`);
-            if (totalSms > 0) resultParts.push(`${totalSms} SMS`);
-            const errorNote = totalErrors > 0 ? ` (${totalErrors} failed)` : '';
-            setSuccess(`Campaign sent successfully! ${resultParts.join(', ')} sent.${errorNote}`);
-            setForm(prev => ({ ...prev, subject: '', message: '' }));
+            const parts: string[] = [];
+            if (effectiveChannels.email) parts.push(`${sent.email} email${sent.email === 1 ? '' : 's'} sent${failed.email ? `, ${failed.email} failed` : ''}`);
+            if (effectiveChannels.sms) parts.push(`${sent.sms} SMS sent${failed.sms ? `, ${failed.sms} failed` : ''}`);
+            const report = parts.join('. ') + '.';
+
+            if (batchError) {
+                setError(`${batchError} So far: ${report}`);
+            } else if (sent.email + sent.sms === 0) {
+                setError(`Nothing was delivered. ${report} Check the email and SMS settings.`);
+            } else {
+                setSuccess(`Campaign finished. ${report}`);
+                setForm(prev => ({ ...prev, subject: '', message: '' }));
+            }
         } catch (err: any) {
             setError(err.message);
         } finally {
@@ -150,7 +231,7 @@ export default function NotificationsPage() {
             <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-200">
                 <h2 className="text-xl font-semibold mb-6">Send New Campaign</h2>
 
-                {success && <div className="bg-gray-50 text-gray-900 p-4 rounded-lg mb-4">{success}</div>}
+                {success && <div className="bg-green-50 text-green-800 p-4 rounded-lg mb-4">{success}</div>}
                 {error && <div className="bg-red-50 text-red-700 p-4 rounded-lg mb-4">{error}</div>}
 
                 <form onSubmit={handleSend} className="space-y-6">
@@ -158,12 +239,24 @@ export default function NotificationsPage() {
                         <label className="block text-sm font-semibold text-gray-700 mb-2">Audience</label>
                         <select
                             value={form.audience}
-                            onChange={e => setForm({ ...form, audience: e.target.value })}
+                            onChange={e => setForm({ ...form, audience: e.target.value as Audience })}
                             className="w-full p-3 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-gray-600"
                         >
-                            <option value="all">All Customers</option>
-                            <option value="newsletter">Newsletter Subscribers</option>
+                            {AUDIENCES.map((a) => (
+                                <option key={a.value} value={a.value}>{a.label}</option>
+                            ))}
                         </select>
+                        <p className="text-sm text-gray-500 mt-1">{AUDIENCES.find((a) => a.value === form.audience)?.note}</p>
+                        <p className="text-sm font-medium text-gray-800 mt-2" aria-live="polite">
+                            {previewError
+                                ? <span className="text-red-600">{previewError}</span>
+                                : preview === null
+                                    ? 'Counting recipients…'
+                                    : [
+                                        effectiveChannels.email ? `${preview.email} email recipient${preview.email === 1 ? '' : 's'}` : null,
+                                        effectiveChannels.sms ? `${preview.sms} SMS recipient${preview.sms === 1 ? '' : 's'}` : null,
+                                    ].filter(Boolean).join(' · ') || 'Choose at least one channel'}
+                        </p>
                     </div>
 
                     <div className="flex gap-6 p-4 bg-gray-50 rounded-lg border border-gray-100">
@@ -172,22 +265,23 @@ export default function NotificationsPage() {
                                 type="checkbox"
                                 checked={form.channels.email}
                                 onChange={e => setForm({ ...form, channels: { ...form.channels, email: e.target.checked } })}
-                                className="w-5 h-5 text-gray-700 rounded focus:ring-gray-600 cursor-pointer"
+                                className="w-5 h-5 text-gray-900 rounded focus:ring-gray-600 cursor-pointer"
                             />
                             <span className="font-medium text-gray-900">Send Email</span>
                         </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
+                        <label className={`flex items-center gap-2 ${smsAvailable ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`} title={smsAvailable ? undefined : 'Newsletter subscribers have no phone numbers'}>
                             <input
                                 type="checkbox"
-                                checked={form.channels.sms}
+                                disabled={!smsAvailable}
+                                checked={form.channels.sms && smsAvailable}
                                 onChange={e => setForm({ ...form, channels: { ...form.channels, sms: e.target.checked } })}
-                                className="w-5 h-5 text-gray-700 rounded focus:ring-gray-600 cursor-pointer"
+                                className="w-5 h-5 text-gray-900 rounded focus:ring-gray-600 cursor-pointer"
                             />
                             <span className="font-medium text-gray-900">Send SMS</span>
                         </label>
                     </div>
 
-                    {form.channels.email && (
+                    {effectiveChannels.email && (
                         <div>
                             <label className="block text-sm font-semibold text-gray-700 mb-2">Email Subject</label>
                             <input
@@ -196,7 +290,7 @@ export default function NotificationsPage() {
                                 onChange={e => setForm({ ...form, subject: e.target.value })}
                                 className="w-full p-3 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-gray-600"
                                 placeholder="e.g., Summer Sale Starts Now!"
-                                required={form.channels.email}
+                                required={effectiveChannels.email}
                             />
                         </div>
                     )}
@@ -207,16 +301,19 @@ export default function NotificationsPage() {
                             value={form.message}
                             onChange={e => setForm({ ...form, message: e.target.value })}
                             className="w-full p-3 border border-gray-300 rounded-lg h-40 outline-none focus:ring-2 focus:ring-gray-600"
-                            placeholder="Write your message here... For emails, this supports plain text."
+                            placeholder="Write your message here..."
                             required
                         />
-                        <p className="text-sm text-gray-500 mt-1">This message will be used for the email body (wrapped in a template) and SMS content (if selected).</p>
+                        <p className="text-sm text-gray-500 mt-1">
+                            Sent as plain text: links, bold and other formatting or HTML will appear exactly as typed. The email version is placed inside the store&apos;s email template.
+                            {effectiveChannels.sms && ` SMS: ${form.message.length} characters (${Math.max(1, Math.ceil(form.message.length / 160))} message${Math.ceil(form.message.length / 160) > 1 ? 's' : ''} per person).`}
+                        </p>
                     </div>
 
                     <button
                         type="submit"
-                        disabled={loading || (!form.channels.email && !form.channels.sms)}
-                        className="w-full bg-primary text-white py-4 rounded-lg font-bold text-lg hover:bg-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        disabled={loading || (!effectiveChannels.email && !effectiveChannels.sms) || (preview !== null && preview.email + preview.sms === 0)}
+                        className="w-full bg-primary text-white py-4 rounded-lg font-bold text-lg hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                     >
                         {loading ? (
                             <span className="flex items-center justify-center">

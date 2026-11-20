@@ -11,7 +11,13 @@ import { authJwtSecret } from "./mode";
 export type RlsActor =
   | { kind: "service" }
   | { kind: "anon"; claims: Record<string, unknown> }
-  | { kind: "authenticated"; userId: string; claims: Record<string, unknown> };
+  | {
+      kind: "authenticated";
+      userId: string;
+      claims: Record<string, unknown>;
+      /** profiles.role (admin, staff, customer), when the request was checked against the account. */
+      appRole?: string | null;
+    };
 
 export class RlsAuthError extends Error {
   status = 401;
@@ -21,6 +27,8 @@ const ANON_ROLE = process.env.DB_ANON_ROLE || "anon";
 const AUTHENTICATED_ROLE = process.env.DB_AUTHENTICATED_ROLE || "authenticated";
 const ROLE_IDENT = /^[a-z_][a-z0-9_]*$/;
 
+const ANON: RlsActor = { kind: "anon", claims: { role: "anon" } };
+
 function bearerToken(headers: Headers): string | null {
   const auth = headers.get("authorization") || "";
   const bearer = auth.replace(/^Bearer\s+/i, "").trim();
@@ -29,30 +37,97 @@ function bearerToken(headers: Headers): string | null {
   return apikey || null;
 }
 
-/** Work out who is calling from the Authorization / apikey headers. */
+/** admin or staff: may see cost prices, raw database errors, and run unfiltered writes. */
+export function isStaffActor(actor: RlsActor): boolean {
+  return actor.kind === "authenticated" && (actor.appRole === "admin" || actor.appRole === "staff");
+}
+
+/**
+ * The live account behind a signed-in token. A deleted or banned account, or
+ * a token minted before the account's sessions were revoked (sign-out
+ * everywhere, password change; tokens without an `sv` claim count as 0),
+ * returns null.
+ */
+async function liveAccount(
+  userId: string,
+  payload: Record<string, unknown>
+): Promise<{ role: string | null } | null> {
+  type Row = { role: string | null; session_version: number | null; banned: boolean };
+  const sql = (withVersion: boolean) =>
+    `SELECT p.role::text AS role,
+            ${withVersion ? "u.session_version" : "0"} AS session_version,
+            coalesce(u.banned_until > now(), false) AS banned
+       FROM auth.users u
+       LEFT JOIN public.profiles p ON p.id = u.id
+      WHERE u.id = $1 AND u.deleted_at IS NULL
+      LIMIT 1`;
+  let rows: Row[];
+  try {
+    ({ rows } = await getSharedPool().query<Row>(sql(true), [userId]));
+  } catch (e: any) {
+    // auth.users.session_version not created yet: every token counts as current.
+    if (e?.code !== "42703") throw e;
+    ({ rows } = await getSharedPool().query<Row>(sql(false), [userId]));
+  }
+  const account = rows[0];
+  if (!account || account.banned) return null;
+  const tokenSv = Number(payload.sv ?? 0) || 0;
+  if (tokenSv < (Number(account.session_version ?? 0) || 0)) return null;
+  return { role: account.role ? String(account.role) : null };
+}
+
+/**
+ * Work out who is calling a browser-facing route (/rest/v1, /storage/v1)
+ * from the Authorization / apikey headers. These routes never act as the
+ * service role: the service key and service_role tokens are refused, so a
+ * leaked or forged service token cannot bypass row-level security over HTTP.
+ * Server code that needs the service role uses createServerSupabase('service')
+ * in-process instead.
+ */
 export async function resolveActor(headers: Headers): Promise<RlsActor> {
   const token = bearerToken(headers);
-  if (!token) return { kind: "anon", claims: { role: "anon" } };
+  if (!token) return ANON;
+
+  // supabase-js sends the public anon key when nobody is signed in.
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (anonKey && token === anonKey) return ANON;
 
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (serviceKey && token === serviceKey) return { kind: "service" };
+  if (serviceKey && token === serviceKey) {
+    throw new RlsAuthError("JWT is invalid or expired");
+  }
 
   let payload: Record<string, unknown>;
   try {
-    ({ payload } = (await jwtVerify(token, new TextEncoder().encode(authJwtSecret()))) as {
-      payload: Record<string, unknown>;
-    });
+    ({ payload } = (await jwtVerify(token, new TextEncoder().encode(authJwtSecret()), {
+      algorithms: ["HS256"],
+    })) as { payload: Record<string, unknown> });
   } catch {
     throw new RlsAuthError("JWT is invalid or expired");
   }
 
   if (payload.typ === "refresh") throw new RlsAuthError("Refresh tokens cannot call the API");
-  if (payload.role === "service_role") return { kind: "service" };
-  if (payload.role === "anon") return { kind: "anon", claims: payload };
+  if (payload.role === "service_role") throw new RlsAuthError("JWT is invalid or expired");
+  // An anon token grants nothing beyond anonymous access, whatever its claims.
+  if (payload.role === "anon") return { kind: "anon", claims: { role: "anon" } };
 
   const userId = typeof payload.sub === "string" ? payload.sub : "";
   if (!userId) throw new RlsAuthError("JWT has no subject");
-  return { kind: "authenticated", userId, claims: { ...payload, role: "authenticated" } };
+  // Session tokens always carry an expiry; one without exp would never die.
+  if (typeof payload.exp !== "number") throw new RlsAuthError("JWT is invalid or expired");
+  if (payload.role !== "authenticated") throw new RlsAuthError("JWT is invalid or expired");
+
+  // Banned, deleted or signed-out-everywhere accounts are treated as
+  // anonymous, so a ban or password change cuts data access at once instead
+  // of when the access token expires.
+  const account = await liveAccount(userId, payload);
+  if (!account) return ANON;
+  return {
+    kind: "authenticated",
+    userId,
+    claims: { ...payload, role: "authenticated" },
+    appRole: account.role,
+  };
 }
 
 function dbRoleFor(actor: Exclude<RlsActor, { kind: "service" }>): string {

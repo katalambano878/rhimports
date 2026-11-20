@@ -79,6 +79,15 @@ function ident(name: string): string {
   return `"${name}"`;
 }
 
+/**
+ * A table in the public schema, always schema-qualified so a name can never
+ * resolve to a system catalog (pg_catalog is searched first for unqualified
+ * names: `pg_roles`, `pg_settings`, ...).
+ */
+function tbl(name: string): string {
+  return `public.${ident(name)}`;
+}
+
 /** Cast uuid-like columns to text when the filter value is not a UUID. */
 function uuidSafeLeft(col: string, value: any): string {
   const looksUuidCol = col === "id" || col.endsWith("_id");
@@ -91,6 +100,33 @@ function uuidSafeLeft(col: string, value: any): string {
     return `${ident(col)}::text`;
   }
   return ident(col);
+}
+
+/** The tables a select string reads, keyed by the property each embed lands on. */
+export interface SelectTree {
+  table: string;
+  embeds: Array<{ alias: string; node: SelectTree }>;
+}
+
+/**
+ * Resolve a select string into the tables it reads, the same way the query
+ * builder resolves embeds at run time (an fk-column embed takes the owning
+ * table's own FK edge). The REST route uses it to validate embedded table
+ * names and to strip staff-only columns from embedded rows.
+ */
+export function describeSelect(table: string, sel: string): SelectTree {
+  const build = (owner: string, parsed: ParsedSelect): SelectTree => ({
+    table: owner,
+    embeds: parsed.embeds.map((e) => {
+      let embedTable = e.table;
+      if (e.fkColumn) {
+        const own = (FK_MAP[owner] || []).find((x) => x.column === e.fkColumn);
+        if (own) embedTable = own.foreignTable;
+      }
+      return { alias: e.alias, node: build(embedTable, e.select) };
+    }),
+  });
+  return build(table, parseSelect(sel || "*"));
 }
 
 // ---- select-string parser (handles nested embeds with parentheses) ---------
@@ -381,6 +417,27 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
     this.rangeTo = to;
     return this;
   }
+  /**
+   * Cap the rows a read returns, like PostgREST's `max-rows` (1000 on hosted
+   * Supabase): a smaller `.limit()` / `.range()` still wins, a larger one is
+   * cut to `max` rows starting at the same offset.
+   */
+  capRows(max: number) {
+    const cap = Math.max(0, Math.floor(max));
+    const valid = (n: number | null) => n !== null && Number.isFinite(n);
+    if (valid(this.rangeFrom) && valid(this.rangeTo)) {
+      if (this.rangeTo! - this.rangeFrom! + 1 > cap) this.rangeTo = this.rangeFrom! + cap - 1;
+    } else if (!valid(this.limitN) || this.limitN! < 0 || this.limitN! > cap) {
+      this.rangeFrom = null;
+      this.rangeTo = null;
+      this.limitN = cap;
+    }
+    return this;
+  }
+  /** True when at least one row filter (eq, in, or, ...) has been applied. */
+  get hasFilters(): boolean {
+    return this.filters.length > 0;
+  }
   single() {
     this.singleMode = "single";
     this.returnRows = true;
@@ -566,7 +623,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
         ? `${ident(rel.embedTable)}.${ident(embedCol)}::text`
         : `${ident(rel.embedTable)}.${ident(embedCol)}`;
     return (
-      `EXISTS (SELECT 1 FROM ${ident(rel.embedTable)} ` +
+      `EXISTS (SELECT 1 FROM ${tbl(rel.embedTable)} ` +
       `WHERE ${ident(rel.embedTable)}.${ident(rel.childCol)} = ${ident(this.table)}.${ident(rel.parentCol)} ` +
       `AND ${embedLeft} ${o} $${params.length})`
     );
@@ -583,7 +640,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
       return `$${params.length}`;
     });
     return (
-      `EXISTS (SELECT 1 FROM ${ident(rel.embedTable)} ` +
+      `EXISTS (SELECT 1 FROM ${tbl(rel.embedTable)} ` +
       `WHERE ${ident(rel.embedTable)}.${ident(rel.childCol)} = ${ident(this.table)}.${ident(rel.parentCol)} ` +
       `AND ${ident(rel.embedTable)}.${ident(embedCol)} IN (${ph.join(",")}))`
     );
@@ -680,7 +737,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
         const where = this.buildWhere(params);
         if (this.wantCount) {
           const cRes = await pool.query(
-            `SELECT count(*)::int AS c FROM ${ident(this.table)} ${where}`,
+            `SELECT count(*)::int AS c FROM ${tbl(this.table)} ${where}`,
             params
           );
           count = cRes.rows[0]?.c ?? 0;
@@ -690,7 +747,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
           const cols = this.topLevelColumns(parsed);
           const orderLimit = this.buildOrderLimit();
           const res = await pool.query(
-            `SELECT ${cols} FROM ${ident(this.table)} ${where}${orderLimit}`,
+            `SELECT ${cols} FROM ${tbl(this.table)} ${where}${orderLimit}`,
             params
           );
           rows = res.rows;
@@ -734,7 +791,11 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
       }
       return { data: this.headOnly ? null : rows, error: null, count };
     } catch (err: any) {
-      return { data: null, error: { message: err.message, code: err.code }, count: null };
+      return {
+        data: null,
+        error: { message: err.message, code: err.code ?? null, details: err.detail ?? null, hint: err.hint ?? null },
+        count: null,
+      };
     }
   }
 
@@ -796,7 +857,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
         if (ids.length) {
           const ph = ids.map((_, i) => `$${i + 1}`).join(",");
           const res = await pool.query(
-            `SELECT ${innerCols} FROM ${ident(embedTable)} WHERE ${ident("id")} IN (${ph})`,
+            `SELECT ${innerCols} FROM ${tbl(embedTable)} WHERE ${ident("id")} IN (${ph})`,
             ids
           );
           related = res.rows;
@@ -828,7 +889,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
             const ph = parentIds.map((_, i) => `$${i + 1}`).join(",");
             const res = await pool.query(
               `SELECT ${ident(fkCol)} AS parent_id, count(*)::int AS count
-               FROM ${ident(embedTable)}
+               FROM ${tbl(embedTable)}
                WHERE ${ident(fkCol)} IN (${ph})
                GROUP BY ${ident(fkCol)}`,
               parentIds
@@ -854,7 +915,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
               ? ` ORDER BY ${ident("position")} ASC NULLS LAST`
               : "";
           const res = await pool.query(
-            `SELECT ${innerCols} FROM ${ident(embedTable)} WHERE ${ident(fkCol)} IN (${ph})${orderBy}`,
+            `SELECT ${innerCols} FROM ${tbl(embedTable)} WHERE ${ident(fkCol)} IN (${ph})${orderBy}`,
             parentIds
           );
           related = res.rows;
@@ -933,7 +994,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
       })
       .join(", ");
     const colSql = cols.map(ident).join(", ");
-    let sql = `INSERT INTO ${ident(this.table)} (${colSql}) VALUES ${valuesSql}`;
+    let sql = `INSERT INTO ${tbl(this.table)} (${colSql}) VALUES ${valuesSql}`;
     if (this.action === "upsert") {
       const conflict = this.onConflictCols?.length
         ? this.onConflictCols.map(ident).join(", ")
@@ -958,7 +1019,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
       return `${ident(c)} = $${params.length}`;
     });
     const where = this.buildWhere(params);
-    let sql = `UPDATE ${ident(this.table)} SET ${sets.join(", ")} ${where}`;
+    let sql = `UPDATE ${tbl(this.table)} SET ${sets.join(", ")} ${where}`;
     if (this.returnRows) sql += " RETURNING *";
     const res = await pool.query(sql, params);
     return res.rows;
@@ -967,7 +1028,7 @@ class QueryBuilder implements PromiseLike<{ data: any; error: any; count: number
   private async execDelete(pool: ReturnType<typeof getPool>): Promise<Row[]> {
     const params: any[] = [];
     const where = this.buildWhere(params);
-    let sql = `DELETE FROM ${ident(this.table)} ${where}`;
+    let sql = `DELETE FROM ${tbl(this.table)} ${where}`;
     if (this.returnRows) sql += " RETURNING *";
     const res = await pool.query(sql, params);
     return res.rows;
@@ -1039,7 +1100,7 @@ async function callRpc(
     const res = await pool.query(sql, params);
     return { data: res.rows[0]?.result ?? null, error: null };
   } catch (e: any) {
-    return { data: null, error: { message: e.message || String(e) } };
+    return { data: null, error: { message: e.message || String(e), code: e.code ?? null, details: e.detail ?? null, hint: e.hint ?? null } };
   }
 }
 
@@ -1052,7 +1113,10 @@ function createAuthApi() {
       const auth = await loadAuth();
       const { session, error } = await auth.signInWithPassword(email, password);
       if (error || !session) {
-        return { data: { user: null, session: null }, error: { message: error || "Login failed" } };
+        return {
+          data: { user: null, session: null },
+          error: { message: error?.message || "Login failed", code: error?.code ?? null, status: error?.status ?? 400 },
+        };
       }
       return {
         data: {
@@ -1086,7 +1150,10 @@ function createAuthApi() {
         data: options?.data,
       });
       if (error) {
-        return { data: { user: null, session: null }, error: { message: error } };
+        return {
+          data: { user: null, session: null },
+          error: { message: error.message, code: error.code, status: error.status },
+        };
       }
       return {
         data: { user, session: null },
@@ -1098,13 +1165,10 @@ function createAuthApi() {
         return { data: { user: null }, error: { message: "No JWT provided" } };
       }
       const auth = await loadAuth();
-      const verified = await auth.verifyAccessToken(jwt);
-      if (!verified) {
-        return { data: { user: null }, error: { message: "Invalid JWT" } };
-      }
-      const user = await auth.getUserById(verified.userId);
+      // Invalid, expired, banned, deleted or revoked sessions all fail here.
+      const user = await auth.getUserForToken(jwt);
       if (!user) {
-        return { data: { user: null }, error: { message: "User not found" } };
+        return { data: { user: null }, error: { message: "Invalid JWT", status: 401 } };
       }
       return { data: { user }, error: null };
     },
@@ -1247,7 +1311,9 @@ function coerce(v: string): any {
   if (v === "true") return true;
   if (v === "false") return false;
   if (v === "null") return null;
-  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  // Only values that survive the round trip become numbers: a phone number
+  // such as 0200000004 or a long reference must stay text.
+  if (/^-?\d+(\.\d+)?$/.test(v) && String(Number(v)) === v) return Number(v);
   // strip optional double-quotes used by PostgREST
   if (v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
   return v;

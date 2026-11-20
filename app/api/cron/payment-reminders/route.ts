@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { timingSafeEqual } from 'crypto';
 import { createServerSupabase } from '@/lib/supabase-server';
 import { sendPaymentLink } from '@/lib/notifications';
 
@@ -18,7 +19,9 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Cron not configured' }, { status: 503 });
     }
 
-    if (authHeader !== `Bearer ${cronSecret}`) {
+    const given = Buffer.from(authHeader || '', 'utf8');
+    const want = Buffer.from(`Bearer ${cronSecret}`, 'utf8');
+    if (given.length !== want.length || !timingSafeEqual(given, want)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -28,20 +31,25 @@ export async function GET(request: Request) {
     // 1. Are not paid
     // 2. Were created more than 15 minutes ago
     // 3. Haven't had a reminder sent yet
+    // 4. Were created in the last 48 hours (older ones are not chased by text)
+    // 5. Are still open (not cancelled/refunded)
     const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
     const { data: pendingOrders, error } = await supabase
       .from('orders')
-      .select('id, order_number, email, phone, total, shipping_address, metadata')
-      .neq('payment_status', 'paid')
+      .select('id, order_number, email, phone, total, status, payment_status, shipping_address, metadata')
+      .in('payment_status', ['pending', 'failed'])
+      .in('status', ['pending', 'awaiting_payment'])
       .eq('payment_reminder_sent', false)
       .lt('created_at', fifteenMinutesAgo)
+      .gt('created_at', fortyEightHoursAgo)
       .order('created_at', { ascending: true })
       .limit(50); // Process max 50 at a time to avoid timeout
 
     if (error) {
-      console.error('[Payment Reminders] Query error:', error);
-      throw error;
+      console.error('[Payment Reminders] Query error:', error.message);
+      return NextResponse.json({ error: 'Query failed' }, { status: 500 });
     }
 
     if (!pendingOrders || pendingOrders.length === 0) {
@@ -59,17 +67,21 @@ export async function GET(request: Request) {
 
     for (const order of pendingOrders) {
       try {
-        // Send payment link notification
-        await sendPaymentLink(order);
-
-        // Mark as sent
-        await supabase
+        // Claim the reminder first so an overlapping run cannot text twice.
+        const { data: claimed, error: claimError } = await supabase
           .from('orders')
-          .update({ 
+          .update({
             payment_reminder_sent: true,
             payment_reminder_sent_at: new Date().toISOString()
           })
-          .eq('id', order.id);
+          .eq('id', order.id)
+          .eq('payment_reminder_sent', false)
+          .neq('payment_status', 'paid')
+          .select('id');
+        if (claimError || !claimed || claimed.length === 0) continue;
+
+        // Placeholder till addresses are skipped inside sendEmail.
+        await sendPaymentLink(order);
 
         sent++;
         console.log(`[Payment Reminders] Sent reminder for order ${order.order_number}`);
@@ -87,7 +99,7 @@ export async function GET(request: Request) {
     });
 
   } catch (error: any) {
-    console.error('[Payment Reminders] Error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[Payment Reminders] Error:', error?.message || error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

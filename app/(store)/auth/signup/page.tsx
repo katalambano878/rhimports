@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import PasswordStrengthMeter from '@/components/PasswordStrengthMeter';
 import { supabase } from '@/lib/supabase';
 import { useRecaptcha } from '@/hooks/useRecaptcha';
+import { safeInternalPath } from '../safe-next';
 
 function getFriendlyError(message: string): string {
   const lower = message.toLowerCase();
@@ -47,6 +48,13 @@ export default function SignupPage() {
   const [authError, setAuthError] = useState('');
   const [success, setSuccess] = useState(false);
   const { getToken, verifying } = useRecaptcha();
+
+  const [redirectTo, setRedirectTo] = useState('/account');
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setRedirectTo(safeInternalPath(params.get('redirect') || params.get('next'), '/account'));
+  }, []);
+  const loginHref = redirectTo !== '/account' ? `/auth/login?redirect=${encodeURIComponent(redirectTo)}` : '/auth/login';
 
   // Auto-scroll to error when it appears
   useEffect(() => {
@@ -104,7 +112,7 @@ export default function SignupPage() {
         email: formData.email,
         password: formData.password,
         options: {
-          emailRedirectTo: `${appBaseUrl}/auth/login?verified=1`,
+          emailRedirectTo: `${appBaseUrl}/auth/login?verified=1${redirectTo !== '/account' ? `&redirect=${encodeURIComponent(redirectTo)}` : ''}`,
           data: {
             first_name: formData.firstName,
             last_name: formData.lastName,
@@ -117,6 +125,15 @@ export default function SignupPage() {
       if (error) throw error;
 
       if (data.user) {
+        // Newsletter: subscribe for real when the box was ticked (best-effort).
+        if (formData.newsletter) {
+          fetch('/api/storefront/newsletter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: formData.email.trim() }),
+          }).catch((err) => console.error('Newsletter signup error:', err));
+        }
+
         // Send Welcome Notification (best-effort)
         fetch('/api/notifications', {
           method: 'POST',
@@ -133,7 +150,7 @@ export default function SignupPage() {
         if (!data.session) {
           setSuccess(true);
         } else {
-          router.push('/account');
+          router.push(redirectTo);
           router.refresh();
         }
       }
@@ -160,7 +177,7 @@ export default function SignupPage() {
           </p>
           <div className="pt-4">
             <Link
-              href="/auth/login"
+              href={loginHref}
               className="inline-flex items-center gap-2 bg-primary text-white px-8 py-4 rounded-full font-medium hover:bg-primary transition-all hover:shadow-lg transform hover:-translate-y-1"
             >
               <i className="ri-arrow-left-line"></i>
@@ -378,7 +395,7 @@ export default function SignupPage() {
                   <i className="ri-check-line absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white opacity-0 peer-checked:opacity-100 pointer-events-none text-xs" />
                 </div>
                 <span className="text-sm text-gray-600 leading-tight pt-0.5">
-                  Subscribe to our newsletter for exclusive offers and updates.
+                  Email me about new arrivals and preorder openings.
                 </span>
               </label>
             </div>
@@ -433,7 +450,7 @@ export default function SignupPage() {
             <p className="mt-6 text-center text-sm text-gray-500">
               Already have an account?{' '}
               <Link
-                href="/auth/login"
+                href={loginHref}
                 className="font-semibold text-primary hover:text-primary-dark"
               >
                 Sign in

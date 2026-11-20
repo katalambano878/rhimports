@@ -140,29 +140,29 @@ export default function TermsPage() {
             <div className="bg-gray-50 p-6 rounded-xl mb-6">
               <ul className="space-y-2 text-gray-600">
                 <li className="flex items-center gap-2">
-                  <i className="ri-smartphone-line text-gray-900"></i>
-                  <span>Mobile Money (MTN, Vodafone, AirtelTigo) via Moolre</span>
+                  <i className="ri-smartphone-line text-gray-900" aria-hidden="true"></i>
+                  <span>Mobile Money via Hubtel or Moolre</span>
                 </li>
                 <li className="flex items-center gap-2">
-                  <i className="ri-bank-card-line text-gray-900"></i>
-                  <span>Credit/Debit Cards (Visa, Mastercard) via Moolre</span>
+                  <i className="ri-bank-card-line text-gray-900" aria-hidden="true"></i>
+                  <span>Debit and credit cards via Hubtel</span>
                 </li>
               </ul>
             </div>
             <p className="text-gray-600 leading-relaxed">
-              Payment must be received in full before order dispatch. By providing payment information, you confirm that you are authorised to use the payment method and that there are sufficient funds available.
+              All payments are made online. We do not offer cash on delivery or payment in instalments. Payment for the order must be received in full before we place it with our supplier; the delivery cost is charged separately and our team contacts you with it. By providing payment information, you confirm that you are authorised to use the payment method and that there are sufficient funds available.
             </p>
 
             <h3 className="text-xl font-bold text-gray-900 mb-4 mt-8">4.3 Order Modifications</h3>
             <p className="text-gray-600 leading-relaxed">
-              You may modify or cancel your order within 1 hour of placement. After this time, orders enter processing and cannot be changed. Contact customer service immediately if you need to make changes.
+              Contact us as soon as possible if you need to change or cancel an order. Most products are preorders that we buy from our suppliers after you order, so once an item has been ordered from the supplier we may not be able to change or cancel it.
             </p>
           </section>
 
           <section className="mb-12">
             <h2 className="text-3xl font-bold text-gray-900 mb-6">5. Shipping & Delivery</h2>
             <p className="text-gray-600 leading-relaxed mb-4">
-              Delivery times and costs vary by location and shipping method selected. See our Shipping Policy for detailed information.
+              Most products are preorders sourced from verified suppliers abroad and are delivered 45–60 days after the order. Delivery is to your door; the cost depends on your location and package size and is not included in the online payment. Our team contacts you with the delivery cost. See our <a href="/shipping" className="text-gray-900 font-medium hover:underline">Shipping page</a> for more information.
             </p>
             <p className="text-gray-600 leading-relaxed mb-4">
               Risk of loss and title for products pass to you upon delivery to the carrier. We are not responsible for delays caused by the shipping carrier or circumstances beyond our control (weather, strikes, customs, etc.).
@@ -178,14 +178,14 @@ export default function TermsPage() {
               Please review our <a href="/refund-policy" className="text-gray-900 font-medium hover:underline">Refund Policy</a> for complete details on return eligibility, process, exchanges, and support.
             </p>
             <p className="text-gray-600 leading-relaxed">
-              If we do not have the same item you purchased, a full refund will be made. Refunds are issued to the original payment method once the return is approved; your bank or card company may take additional time to process the refund.
+              Returns must be started within 7 days of delivery. If we do not have the same item you purchased, a full refund will be made. Refunds are issued to the original payment method once the return is approved; your bank or card company may take additional time to process the refund.
             </p>
           </section>
 
           <section className="mb-12">
             <h2 className="text-3xl font-bold text-gray-900 mb-6">7. Intellectual Property</h2>
             <p className="text-gray-600 leading-relaxed mb-4">
-              All content on this website, including text, graphics, logos, images, videos, and software, is the property of Premium Store or its content suppliers and is protected by copyright, trademark, and other intellectual property laws.
+              All content on this website, including text, graphics, logos, images, videos, and software, is the property of RNH Imports or its content suppliers and is protected by copyright, trademark, and other intellectual property laws.
             </p>
             <p className="text-gray-600 leading-relaxed mb-4">
               You may not reproduce, distribute, modify, create derivative works of, publicly display, or otherwise use any content from this website without our express written permission.
@@ -229,7 +229,7 @@ export default function TermsPage() {
           <section className="mb-12">
             <h2 className="text-3xl font-bold text-gray-900 mb-6">9. Limitation of Liability</h2>
             <p className="text-gray-600 leading-relaxed mb-4">
-              To the fullest extent permitted by law, Premium Store shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from:
+              To the fullest extent permitted by law, RNH Imports shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from:
             </p>
             <ul className="space-y-2 text-gray-600 mb-6">
               <li className="flex items-start gap-2">
@@ -261,14 +261,14 @@ export default function TermsPage() {
           <section className="mb-12">
             <h2 className="text-3xl font-bold text-gray-900 mb-6">10. Indemnification</h2>
             <p className="text-gray-600 leading-relaxed">
-              You agree to indemnify and hold harmless Premium Store, its affiliates, officers, directors, employees, and agents from any claims, damages, losses, liabilities, and expenses (including legal fees) arising from your use of the website, violation of these terms, or infringement of any third-party rights.
+              You agree to indemnify and hold harmless RNH Imports, its affiliates, officers, directors, employees, and agents from any claims, damages, losses, liabilities, and expenses (including legal fees) arising from your use of the website, violation of these terms, or infringement of any third-party rights.
             </p>
           </section>
 
           <section className="mb-12">
             <h2 className="text-3xl font-bold text-gray-900 mb-6">11. Governing Law & Disputes</h2>
             <p className="text-gray-600 leading-relaxed mb-4">
-              These terms are governed by the laws of your jurisdiction. Any disputes arising from these terms or your use of the website shall be subject to the exclusive jurisdiction of the courts in that jurisdiction.
+              These terms are governed by the laws of the Republic of Ghana. Any disputes arising from these terms or your use of the website shall be subject to the jurisdiction of the courts of Ghana.
             </p>
             <p className="text-gray-600 leading-relaxed">
               Before initiating any legal action, you agree to first contact us to seek resolution through informal negotiation.
@@ -294,7 +294,7 @@ export default function TermsPage() {
                   <i className="ri-mail-line text-gray-900 text-xl mt-1"></i>
                   <div>
                     <p className="font-medium text-gray-900">Email</p>
-                    <a href="mailto:contact@example.com" className="text-gray-900 hover:underline">contact@example.com</a>
+                    <a href="mailto:info@rnhimports.com" className="text-gray-900 hover:underline">info@rnhimports.com</a>
                   </div>
                 </div>
 
@@ -302,7 +302,7 @@ export default function TermsPage() {
                   <i className="ri-phone-line text-gray-900 text-xl mt-1"></i>
                   <div>
                     <p className="font-medium text-gray-900">Phone</p>
-                    <a href="tel:" className="text-gray-900 hover:underline">Contact</a>
+                    <a href="tel:+233242205331" className="text-gray-900 hover:underline">024 220 5331</a>
                   </div>
                 </div>
 
@@ -310,7 +310,7 @@ export default function TermsPage() {
                   <i className="ri-map-pin-line text-gray-900 text-xl mt-1"></i>
                   <div>
                     <p className="font-medium text-gray-900">Address</p>
-                    <p className="text-gray-600">Configure in Admin → Settings</p>
+                    <p className="text-gray-600">Amasaman Achiaman, Annosel Junction, Accra, Ghana</p>
                   </div>
                 </div>
               </div>

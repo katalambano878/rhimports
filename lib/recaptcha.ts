@@ -8,6 +8,9 @@ const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY || '';
 // Minimum score to pass verification (0.0 = bot, 1.0 = human)
 const MIN_SCORE = 0.5;
 
+// Logged once per server process when verification is switched off.
+let warnedMissingSecret = false;
+
 /**
  * Client-side: Execute reCAPTCHA v3 and return a token.
  * Must be called in the browser after the reCAPTCHA script has loaded.
@@ -49,8 +52,13 @@ export async function verifyRecaptcha(
     expectedAction?: string
 ): Promise<{ success: boolean; score?: number; error?: string }> {
     if (!RECAPTCHA_SECRET_KEY) {
-        console.warn('[reCAPTCHA] RECAPTCHA_SECRET_KEY not configured — skipping verification');
-        return { success: true, score: 1.0 }; // Pass through if not configured
+        // The site keeps working without a key (forms are also rate-limited
+        // server-side), but say so once so it is noticed in the logs.
+        if (!warnedMissingSecret) {
+            warnedMissingSecret = true;
+            console.warn('[reCAPTCHA] RECAPTCHA_SECRET_KEY not configured — verification is OFF (every token passes)');
+        }
+        return { success: true, score: 1.0 };
     }
 
     if (!token) {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createStorageClient } from "@/lib/db/storage";
+import { acceptedUploadType, createStorageClient, MAX_VIDEO_BYTES, uploadLimitFor } from "@/lib/db/storage";
 import { isPlainPostgres } from "@/lib/db/mode";
 import { authorizeStorageWrite as authorize } from "@/lib/db/storage-auth";
 
@@ -24,6 +24,17 @@ async function readUpload(req: NextRequest): Promise<{ bytes: Buffer; contentTyp
   return { bytes: Buffer.from(await req.arrayBuffer()), contentType: headerType };
 }
 
+function tooLarge() {
+  return NextResponse.json(
+    {
+      statusCode: "413",
+      error: "Payload too large",
+      message: "The file is too large. Images may be up to 15 MB and videos up to 60 MB.",
+    },
+    { status: 413 }
+  );
+}
+
 async function store(req: NextRequest, ctx: { params: Promise<{ bucket: string; path: string[] }> }, upsert: boolean) {
   if (!isPlainPostgres()) {
     return NextResponse.json({ error: "DATABASE_URL not set" }, { status: 503 });
@@ -33,6 +44,9 @@ async function store(req: NextRequest, ctx: { params: Promise<{ bucket: string; 
   if (denied) return denied;
 
   const objectPath = path.map(decodeURIComponent).join("/");
+  // Refuse oversized bodies before reading them (multipart adds a little framing).
+  const declared = Number(req.headers.get("content-length") || 0);
+  if (declared > MAX_VIDEO_BYTES + 1024 * 1024) return tooLarge();
   let upload;
   try {
     upload = await readUpload(req);
@@ -40,9 +54,20 @@ async function store(req: NextRequest, ctx: { params: Promise<{ bucket: string; 
     return NextResponse.json({ error: e.message || "Invalid upload" }, { status: 400 });
   }
 
+  // Only images, videos and PDFs: an uploaded HTML/script file served from
+  // this origin would run as the store.
+  const contentType = acceptedUploadType(objectPath, upload.contentType);
+  if (!contentType) {
+    return NextResponse.json(
+      { statusCode: "415", error: "invalid_mime_type", message: "Only image, video or PDF files can be uploaded." },
+      { status: 415 }
+    );
+  }
+  if (upload.bytes.length > (uploadLimitFor(contentType) ?? 0)) return tooLarge();
+
   const storage = createStorageClient();
   const { data, error } = await storage.from(bucket).upload(objectPath, upload.bytes, {
-    contentType: upload.contentType,
+    contentType,
     upsert: upsert || (req.headers.get("x-upsert") || "").toLowerCase() === "true",
   });
   if (error) {

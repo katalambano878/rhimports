@@ -13,6 +13,8 @@ export default function PaymentPage() {
   const router = useRouter();
   const orderId = params?.orderId ?? '';
   const wasCanceled = searchParams?.get('cancelled') === 'true' || searchParams?.get('canceled') === '1';
+  const initFailed = searchParams?.get('init') === 'failed';
+  const stockEmpty = searchParams?.get('stock') === 'empty';
 
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -20,6 +22,8 @@ export default function PaymentPage() {
   const [paymentMethod] = useState<'hubtel'>('hubtel');
   const [error, setError] = useState<string | null>(null);
   const [storeName, setStoreName] = useState('RNH Imports');
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     // Fetch store name
@@ -27,33 +31,37 @@ export default function PaymentPage() {
       .then(({ data }) => { if (data?.value) setStoreName(typeof data.value === 'string' ? data.value : String(data.value)); });
 
     async function fetchOrder() {
+      setLoading(true);
+      setLoadFailed(false);
+      setError(null);
       try {
-        // Fetch order by ID (UUID) or order_number using parameterized
-        // filters (never interpolate user input into a PostgREST .or() string).
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
-        const query = isUUID
-          ? supabase.from('orders').select('*').eq('id', orderId).single()
-          : supabase.from('orders').select('*').eq('order_number', orderId).single();
-
-        const { data, error: fetchError } = await query;
-
-        if (fetchError || !data) {
+        // Guests cannot read orders from the browser; the server returns
+        // only what this page needs.
+        const res = await fetch(`/api/storefront/orders/${encodeURIComponent(orderId)}/payment-summary`, { cache: 'no-store' });
+        if (res.status === 404 || res.status === 400) {
           setError('Order not found. Please check your link and try again.');
-          setLoading(false);
+          return;
+        }
+        if (!res.ok) {
+          setLoadFailed(true);
+          return;
+        }
+        const { order: data } = await res.json();
+        if (!data) {
+          setError('Order not found. Please check your link and try again.');
           return;
         }
 
         setOrder(data);
 
-        // If already paid, redirect to success page
+        // If already paid, go to the confirmation page
         if (data.payment_status === 'paid') {
-          router.push(`/order-success?order=${data.order_number}`);
+          router.push(`/order-success?order=${encodeURIComponent(data.order_number)}`);
           return;
         }
-
       } catch (err) {
         console.error('Error fetching order:', err);
-        setError('Failed to load order details.');
+        setLoadFailed(true);
       } finally {
         setLoading(false);
       }
@@ -61,16 +69,26 @@ export default function PaymentPage() {
 
     if (orderId) {
       fetchOrder();
+    } else {
+      setLoading(false);
+      setError('Order not found. Please check your link and try again.');
     }
-  }, [orderId, router]);
+  }, [orderId, router, reloadKey]);
 
   useEffect(() => {
-    if (!wasCanceled || !order) return;
-    setError('Payment was cancelled. You can retry below when ready.');
-  }, [order, wasCanceled]);
+    if (!order) return;
+    if (stockEmpty) setError('Every item in this order is now out of stock, so it cannot be paid. Please contact us.');
+    else if (initFailed) setError('We could not start the payment. Your order is saved; please try again below.');
+    else if (wasCanceled) setError('Payment was cancelled. You can retry below when ready.');
+  }, [order, wasCanceled, initFailed, stockEmpty]);
+
+  const status = String(order?.status || '');
+  const paymentStatus = String(order?.payment_status || '');
+  const isClosed = ['cancelled', 'refunded'].includes(status) || ['refunded', 'partially_refunded', 'paid'].includes(paymentStatus);
+  const canPay = !!order && !isClosed && !stockEmpty && (paymentStatus === 'pending' || paymentStatus === 'failed');
 
   const handlePayNow = async () => {
-    if (!order) return;
+    if (!order || !canPay) return;
 
     setProcessing(true);
     setError(null);
@@ -80,9 +98,10 @@ export default function PaymentPage() {
       const paymentRes = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // The server works out the amount; the order id proves which order.
         body: JSON.stringify({
           orderId: order.order_number,
-          customerEmail: order.email,
+          orderUuid: order.id,
         }),
       });
 
@@ -90,7 +109,7 @@ export default function PaymentPage() {
         success?: boolean;
         message?: string;
         url?: string;
-        removedItems?: { product_name: string; variant_name?: string; quantity: number }[];
+        removedItems?: { name?: string; variant?: string; product_name?: string; variant_name?: string; quantity: number }[];
         all_out_of_stock?: boolean;
       };
       try {
@@ -112,7 +131,11 @@ export default function PaymentPage() {
 
       if (paymentResult.removedItems && paymentResult.removedItems.length > 0) {
         const removedNames = paymentResult.removedItems
-          .map((item) => `${item.product_name}${item.variant_name ? ` (${item.variant_name})` : ''}`)
+          .map((item) => {
+            const name = item.name || item.product_name || 'Item';
+            const variant = item.variant || item.variant_name;
+            return `${name}${variant ? ` (${variant})` : ''}`;
+          })
           .join(', ');
         setError(`Some items were out of stock and removed: ${removedNames}. Proceeding with the updated total.`);
       }
@@ -128,7 +151,7 @@ export default function PaymentPage() {
   if (loading) {
     return (
       <main className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
+        <div className="text-center" role="status" aria-live="polite">
           <div className="w-16 h-16 border-4 border-gray-200 border-t-gray-700 rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-gray-600">Loading order details...</p>
         </div>
@@ -136,7 +159,25 @@ export default function PaymentPage() {
     );
   }
 
-  if (error && !order) {
+  if (loadFailed && !order) {
+    return (
+      <main className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+        <div className="text-center max-w-md" role="alert">
+          <h1 className="text-2xl font-bold text-gray-900 mb-3">Couldn&apos;t load this order</h1>
+          <p className="text-gray-600 mb-6">Check your connection and try again.</p>
+          <button
+            type="button"
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="inline-flex items-center px-6 py-3 bg-primary hover:bg-primary-dark text-white rounded-lg font-semibold transition-colors"
+          >
+            Try again
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (!order) {
     return (
       <main className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
         <div className="text-center max-w-md">
@@ -144,7 +185,7 @@ export default function PaymentPage() {
             <i className="ri-error-warning-line text-4xl text-red-500"></i>
           </div>
           <h1 className="text-2xl font-bold text-gray-900 mb-3">Order Not Found</h1>
-          <p className="text-gray-600 mb-6">{error}</p>
+          <p className="text-gray-600 mb-6">{error || 'Order not found. Please check your link and try again.'}</p>
           <Link
             href="/"
             className="inline-flex items-center px-6 py-3 bg-primary hover:bg-primary-dark text-white rounded-lg font-semibold transition-colors"
@@ -169,7 +210,9 @@ export default function PaymentPage() {
             <span className="text-2xl font-bold text-gray-700">{storeName}</span>
           </Link>
           <h1 className="text-2xl font-bold text-gray-900">Complete Your Payment</h1>
-          <p className="text-gray-600 mt-2">Hi {customerName}, your order is waiting for payment.</p>
+          <p className="text-gray-600 mt-2">
+            {canPay ? `Hi ${customerName}, your order is waiting for payment.` : `Hi ${customerName}, this order cannot be paid online.`}
+          </p>
         </div>
 
         {/* Order Summary Card */}
@@ -182,28 +225,44 @@ export default function PaymentPage() {
           <div className="space-y-3 mb-6">
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">Subtotal</span>
-              <span className="text-gray-900">GH₵ {order?.subtotal?.toFixed(2)}</span>
+              <span className="text-gray-900">GH₵ {Number(order.subtotal).toFixed(2)}</span>
             </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-600">Shipping</span>
-              <span className="text-gray-900">GH₵ {order?.shipping_total?.toFixed(2)}</span>
-            </div>
-            {order?.discount_total > 0 && (
+            {Number(order.discount_total) > 0 && (
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Discount</span>
-                <span className="text-gray-600">-GH₵ {order?.discount_total?.toFixed(2)}</span>
+                <span className="text-emerald-700">− GH₵ {Number(order.discount_total).toFixed(2)}</span>
               </div>
+            )}
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-600">Delivery</span>
+              <span className="text-amber-600 font-semibold">
+                {Number(order.shipping_total) > 0 ? `GH₵ ${Number(order.shipping_total).toFixed(2)}` : 'At a cost'}
+              </span>
+            </div>
+            {!(Number(order.shipping_total) > 0) && (
+              <p className="text-xs text-gray-500">Delivery is not included. Our team will contact you with the delivery cost.</p>
             )}
           </div>
 
           <div className="flex justify-between items-center pt-4 border-t border-gray-200">
             <span className="text-lg font-semibold text-gray-900">Total</span>
-            <span className="text-2xl font-bold text-gray-700">GH₵ {order?.total?.toFixed(2)}</span>
+            <span className="text-2xl font-bold text-gray-700">GH₵ {Number(order.total).toFixed(2)}</span>
           </div>
         </div>
 
         {/* Payment Status */}
-        {order?.payment_status === 'pending' && (
+        {isClosed && (
+          <div className="bg-gray-100 border border-gray-200 rounded-lg p-4 mb-6" role="status">
+            <p className="text-sm font-semibold text-gray-900">
+              {status === 'cancelled' ? 'This order was cancelled.' : paymentStatus === 'paid' ? 'This order is already paid.' : 'This order was refunded.'}
+            </p>
+            <p className="text-sm text-gray-700 mt-1">
+              If you think this is a mistake, please <Link href="/contact" className="underline">contact us</Link>.
+            </p>
+          </div>
+        )}
+
+        {canPay && paymentStatus === 'pending' && (
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
             <div className="flex items-start space-x-3">
               <i className="ri-time-line text-xl text-yellow-600 mt-0.5"></i>
@@ -217,7 +276,7 @@ export default function PaymentPage() {
           </div>
         )}
 
-        {order?.payment_status === 'failed' && (
+        {canPay && paymentStatus === 'failed' && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
             <div className="flex items-start space-x-3">
               <i className="ri-error-warning-line text-xl text-red-600 mt-0.5"></i>
@@ -232,11 +291,12 @@ export default function PaymentPage() {
         )}
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6" role="alert">
             <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
 
+        {canPay && (<>
         {/* Payment method - Hubtel hosted checkout */}
         <div className="mb-6 bg-white rounded-xl shadow-sm p-6">
           <h2 className="text-base font-bold text-gray-900 mb-4">Payment method</h2>
@@ -251,6 +311,7 @@ export default function PaymentPage() {
 
         {/* Pay Button */}
         <button
+          type="button"
           onClick={handlePayNow}
           disabled={processing}
           className="w-full bg-primary hover:bg-primary-dark text-white py-4 rounded-xl font-semibold text-lg transition-colors disabled:opacity-70 flex items-center justify-center cursor-pointer"
@@ -266,12 +327,13 @@ export default function PaymentPage() {
           ) : (
             <>
               <i className="ri-secure-payment-line mr-2"></i>
-              {order?.payment_status === 'failed'
-                ? `Retry Payment (GH₵ ${order?.total?.toFixed(2)})`
-                : `Pay GH₵ ${order?.total?.toFixed(2)} with Hubtel`}
+              {paymentStatus === 'failed'
+                ? `Retry Payment (GH₵ ${Number(order.total).toFixed(2)})`
+                : `Pay GH₵ ${Number(order.total).toFixed(2)} with Hubtel`}
             </>
           )}
         </button>
+        </>)}
 
         {/* Security Note */}
         <div className="mt-6 text-center">

@@ -75,7 +75,7 @@ export default function AnnouncementBar() {
         // Show default banner if no custom banners
         return (
             <div className="bg-primary-dark text-white py-2 text-center text-sm">
-                <p>Free Store Pickup Available | Order Online, Pick Up Today</p>
+                <p>Most items are preorders, delivered 45–60 days after you order · Pay online with mobile money or card</p>
             </div>
         );
     }

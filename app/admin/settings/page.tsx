@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { defaultSettings } from '@/context/CMSContext';
 import { applyCanonicalContact } from '@/lib/contact';
@@ -19,7 +19,7 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
     { id: 'pages', label: 'Pages', icon: 'ri-pages-line' },
     { id: 'header-footer', label: 'Header & Footer', icon: 'ri-layout-top-2-line' },
     { id: 'seo', label: 'SEO', icon: 'ri-search-eye-line' },
-    { id: 'integrations', label: 'Integrations', icon: 'ri-plug-line' },
+    { id: 'integrations', label: 'Integrations', icon: 'ri-lock-line' },
 ];
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -62,19 +62,33 @@ export default function SettingsPage() {
     const [saved, setSaved] = useState(false);
     const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
+    // Raw stored values (JSON) and their edit-form strings as loaded, so Save
+    // writes only what changed and keeps each value's original JSON type.
+    const original = useRef<Record<string, { raw: unknown; text: string }>>({});
+    const [saveError, setSaveError] = useState('');
+    const [loadError, setLoadError] = useState('');
+
     // Load settings from DB
     const fetchSettings = useCallback(async () => {
         try {
             const { data, error } = await supabase.from('store_settings').select('key, value');
             if (error) throw error;
             const map: Record<string, string> = {};
+            const orig: Record<string, { raw: unknown; text: string }> = {};
             (data || []).forEach((row: any) => {
-                map[row.key] = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+                // Integration keys are not read by the app (the server uses environment
+                // variables), so they are never loaded, shown or re-saved here.
+                if (String(row.key).startsWith('integration_')) return;
+                const text = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+                map[row.key] = text;
+                orig[row.key] = { raw: row.value, text };
             });
             applyCanonicalContact(map);
+            original.current = orig;
             setSettings(map);
-        } catch (err) {
-            console.error('Failed to load settings:', err);
+            setLoadError('');
+        } catch (err: any) {
+            setLoadError(`Could not load settings: ${err?.message || 'unknown error'}`);
         } finally {
             setLoading(false);
         }
@@ -85,34 +99,65 @@ export default function SettingsPage() {
     // Get value with default fallback
     const val = (key: string): string => settings[key] ?? defaultSettings[key] ?? '';
 
+    // Keys the user has edited since the last load/save.
+    const [dirty, setDirty] = useState<Set<string>>(new Set());
+
     // Update in-memory state
     const set = (key: string, value: string) => {
         setSettings(prev => ({ ...prev, [key]: value }));
+        setDirty(prev => new Set(prev).add(key));
         setSaved(false);
+        setSaveError('');
     };
 
-    // Save all settings to DB
-    const handleSave = async () => {
-        setSaving(true);
+    /** Turn the edited text back into the JSON type the key was stored with. */
+    const toStoredValue = (key: string, text: string): unknown => {
+        const prev = original.current[key];
+        if (!prev || typeof prev.raw === 'string') return text;
         try {
-            // Upsert each setting
-            const entries = Object.entries(settings).filter(([_, v]) => v !== undefined);
-            for (const [key, value] of entries) {
-                const { error } = await supabase.from('store_settings').upsert(
-                    { key, value, updated_at: new Date().toISOString() },
-                    { onConflict: 'key' }
-                );
-                if (error) {
-                    throw new Error(`Failed saving "${key}": ${error.message}`);
-                }
-            }
+            return JSON.parse(text);
+        } catch {
+            return text;
+        }
+    };
+
+    // Save only the changed settings
+    const handleSave = async () => {
+        const changed = Array.from(dirty).filter(key => {
+            const prev = original.current[key];
+            return !prev || prev.text !== settings[key];
+        });
+        if (changed.length === 0) {
+            setDirty(new Set());
             setSaved(true);
             setTimeout(() => setSaved(false), 3000);
-        } catch (err) {
-            console.error('Failed to save settings:', err);
-            alert('Failed to save settings. Please try again.');
-        } finally {
-            setSaving(false);
+            return;
+        }
+        setSaving(true);
+        setSaveError('');
+        const failed: string[] = [];
+        const stillDirty = new Set<string>();
+        for (const key of changed) {
+            const value = toStoredValue(key, settings[key] ?? '');
+            const { error } = await supabase.from('store_settings').upsert(
+                { key, value, updated_at: new Date().toISOString() },
+                { onConflict: 'key' }
+            );
+            if (error) {
+                failed.push(`${key} (${error.message})`);
+                stillDirty.add(key);
+            } else {
+                original.current[key] = { raw: value, text: settings[key] ?? '' };
+            }
+        }
+        setDirty(stillDirty);
+        setSaving(false);
+        if (failed.length) {
+            const okCount = changed.length - failed.length;
+            setSaveError(`${okCount} setting${okCount === 1 ? '' : 's'} saved, ${failed.length} not saved: ${failed.join('; ')}. Press Save to try again.`);
+        } else {
+            setSaved(true);
+            setTimeout(() => setSaved(false), 3000);
         }
     };
 
@@ -497,44 +542,12 @@ export default function SettingsPage() {
             case 'integrations':
                 return (
                     <div className="space-y-6">
-                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
-                            <i className="ri-lock-line text-amber-600 text-xl mt-0.5"></i>
-                            <div>
-                                <p className="text-sm font-semibold text-amber-800">Security Notice</p>
-                                <p className="text-xs text-amber-700 mt-0.5">API keys stored here are accessible only by admin users via RLS policies. They are used server-side in API routes and are never exposed to the browser.</p>
-                            </div>
-                        </div>
-
-                        <SectionCard title="Email (Resend)" icon="ri-mail-line" description="Configure email delivery via Resend">
-                            <FieldGroup label="Resend API Key" description="Get your key from resend.com/api-keys"><input type="password" value={val('integration_resend_api_key')} onChange={e => set('integration_resend_api_key', e.target.value)} className={inputClass} placeholder="re_..." /></FieldGroup>
-                            <div className="grid md:grid-cols-2 gap-5">
-                                <FieldGroup label="Admin Email" description="Email for receiving order notifications"><input type="email" value={val('integration_admin_email')} onChange={e => set('integration_admin_email', e.target.value)} className={inputClass} /></FieldGroup>
-                                <FieldGroup label="From Address" description="Sender name and email"><input type="text" value={val('integration_email_from')} onChange={e => set('integration_email_from', e.target.value)} className={inputClass} placeholder="Store Name <noreply@domain.com>" /></FieldGroup>
-                            </div>
-                        </SectionCard>
-
-                        <SectionCard title="Payment (Moolre)" icon="ri-bank-card-line" description="Configure Moolre payment gateway">
-                            <div className="grid md:grid-cols-2 gap-5">
-                                <FieldGroup label="API User"><input type="text" value={val('integration_moolre_api_user')} onChange={e => set('integration_moolre_api_user', e.target.value)} className={inputClass} /></FieldGroup>
-                                <FieldGroup label="API Public Key"><input type="password" value={val('integration_moolre_api_pubkey')} onChange={e => set('integration_moolre_api_pubkey', e.target.value)} className={inputClass} /></FieldGroup>
-                                <FieldGroup label="Account Number"><input type="text" value={val('integration_moolre_account_number')} onChange={e => set('integration_moolre_account_number', e.target.value)} className={inputClass} /></FieldGroup>
-                                <FieldGroup label="Merchant Email"><input type="email" value={val('integration_moolre_merchant_email')} onChange={e => set('integration_moolre_merchant_email', e.target.value)} className={inputClass} /></FieldGroup>
-                            </div>
-                        </SectionCard>
-
-                        <SectionCard title="SMS (Moolre VAS)" icon="ri-message-2-line" description="Configure SMS notifications via Moolre SMS API">
-                            <FieldGroup label="SMS API Key (VASKEY)"><input type="password" value={val('integration_moolre_sms_api_key')} onChange={e => set('integration_moolre_sms_api_key', e.target.value)} className={inputClass} /></FieldGroup>
-                        </SectionCard>
-
-                        <SectionCard title="reCAPTCHA" icon="ri-robot-line" description="Google reCAPTCHA spam protection">
-                            <div className="grid md:grid-cols-2 gap-5">
-                                <FieldGroup label="Site Key"><input type="text" value={val('integration_recaptcha_site_key')} onChange={e => set('integration_recaptcha_site_key', e.target.value)} className={inputClass} /></FieldGroup>
-                                <FieldGroup label="Secret Key"><input type="password" value={val('integration_recaptcha_secret_key')} onChange={e => set('integration_recaptcha_secret_key', e.target.value)} className={inputClass} /></FieldGroup>
-                            </div>
-                        </SectionCard>
-
-                        <SectionCard title="Application" icon="ri-global-line" description="General application settings">
-                            <FieldGroup label="Application URL" description="The public-facing URL of your store"><input type="url" value={val('integration_app_url')} onChange={e => set('integration_app_url', e.target.value)} className={inputClass} placeholder="https://yourstore.com" /></FieldGroup>
+                        <SectionCard title="Email, payments, SMS and reCAPTCHA" icon="ri-lock-line" description="Keys for these services are not stored on this page">
+                            <p className="text-sm text-gray-700">
+                                Resend (email), Moolre (payments), the SMS providers and reCAPTCHA are set up on the server with environment
+                                variables, and the store only reads them from there. To change a key, ask whoever manages the server; nothing
+                                typed here would be used.
+                            </p>
                         </SectionCard>
                     </div>
                 );
@@ -562,11 +575,11 @@ export default function SettingsPage() {
                 <div className="flex items-center justify-between mb-6">
                     <div>
                         <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Settings</h1>
-                        <p className="text-gray-500 mt-1 text-sm">Manage your store configuration, appearance, and integrations</p>
+                        <p className="text-gray-500 mt-1 text-sm">Manage your store configuration and appearance</p>
                     </div>
                     <button
                         onClick={handleSave}
-                        disabled={saving}
+                        disabled={saving || (dirty.size === 0 && !saved)}
                         className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-all shadow-sm ${saved
                             ? 'bg-gray-100 text-gray-900 border border-gray-200'
                             : 'bg-primary text-white hover:bg-primary active:scale-95'
@@ -577,10 +590,17 @@ export default function SettingsPage() {
                         ) : saved ? (
                             <><i className="ri-check-line text-lg"></i> Saved!</>
                         ) : (
-                            <><i className="ri-save-line text-lg"></i> Save Changes</>
+                            <><i className="ri-save-line text-lg"></i> {dirty.size > 0 ? `Save ${dirty.size} change${dirty.size === 1 ? '' : 's'}` : 'No changes'}</>
                         )}
                     </button>
                 </div>
+
+                {(loadError || saveError) && (
+                    <div className="mb-6 flex items-start gap-2 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg text-sm" role="alert">
+                        <i className="ri-error-warning-line text-red-600 mt-0.5"></i>
+                        <span>{loadError || saveError}</span>
+                    </div>
+                )}
 
                 <div className="flex gap-6">
                     {/* Sidebar Tabs - Desktop */}

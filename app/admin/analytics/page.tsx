@@ -3,12 +3,31 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, AreaChart, Area, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, AreaChart, Area, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { downloadCsv, csvMoney } from '@/lib/csv';
+
+/** Page through a query 1000 rows at a time (one select is capped at 1000 rows). */
+async function fetchAllRows<T = any>(build: () => any): Promise<T[]> {
+  const pageSize = 1000;
+  const rows: T[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await build().range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...((data || []) as T[]));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows;
+}
+
+/** Local calendar day key (YYYY-MM-DD). */
+function dayKey(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState('30days');
-  const [reportType, setReportType] = useState('overview');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [salesData, setSalesData] = useState<any[]>([]);
   const [categoryRevenue, setCategoryRevenue] = useState<any[]>([]);
@@ -28,6 +47,7 @@ export default function AnalyticsPage() {
   const fetchAnalytics = useCallback(async () => {
     try {
       setLoading(true);
+      setLoadError(null);
 
       // Calculate start date based on timeRange
       const now = new Date();
@@ -39,53 +59,37 @@ export default function AnalyticsPage() {
 
       const isoStart = startDate.toISOString();
 
-      // Fetch Orders for Revenue & Count - only PAID orders count as revenue
-      const { data: orders, error: orderError } = await supabase
-        .from('orders')
-        .select('id, created_at, total, payment_status')
-        .gte('created_at', isoStart)
-        .eq('payment_status', 'paid') // Only count paid orders as revenue
-        .neq('status', 'cancelled')
-        .order('created_at');
+      // Real revenue only: paid, and not cancelled or refunded. Paged, since one select is capped at 1000 rows.
+      const orders = await fetchAllRows<{ id: string; created_at: string; total: number | null }>(() =>
+        supabase
+          .from('orders')
+          .select('id, created_at, total')
+          .gte('created_at', isoStart)
+          .eq('payment_status', 'paid')
+          .not('status', 'in', '(cancelled,refunded)')
+          .order('created_at')
+      );
 
-      if (orderError) throw orderError;
-
-      // Fetch Order Items for Products & Categories
-      // This might be heavy for large DBs, but fine for typical small shop admin
-      const { data: items, error: itemError } = await supabase
-        .from('order_items')
-        .select(`
-            *,
-            products (name, categories(name))
-         `)
-        .gte('created_at', isoStart); // Assuming order_items has created_at or join orders.. 
-      // Actually order_items usually doesn't have created_at directly in some schemas, 
-      // so we should join orders to filter by date.
-      // Simpler: fetch order_items for the fetched orders IDs.
-
-      let validItems: any[] = [];
-      if (orders && orders.length > 0) {
-        const orderIds = orders.map(o => o.id);
-        const { data: fetchedItems, error: itemFetchError } = await supabase
-          .from('order_items')
-          .select(`
-            quantity, 
-            unit_price, 
-            total_price,
-            product_id,
-            products!inner(name, category_id, categories(name))
-          `)
-          .in('order_id', orderIds);
-
-        if (itemFetchError) {
-          console.error('Error fetching order items:', itemFetchError);
-        }
-        if (fetchedItems) validItems = fetchedItems;
+      // Items of those orders only, in chunks of 150 ids so the request URL stays short.
+      // Left join on products: items of a deleted product still count, under their saved name.
+      const validItems: any[] = [];
+      const orderIds = orders.map(o => o.id);
+      const CHUNK = 150;
+      for (let i = 0; i < orderIds.length; i += CHUNK) {
+        const chunk = orderIds.slice(i, i + CHUNK);
+        const rows = await fetchAllRows<any>(() =>
+          supabase
+            .from('order_items')
+            .select('id, quantity, unit_price, total_price, product_id, product_name, products(name, categories(name))')
+            .in('order_id', chunk)
+            .order('id')
+        );
+        validItems.push(...rows);
       }
 
       // Process Metrics
-      const totalRevenue = orders?.reduce((sum, o) => sum + (o.total || 0), 0) || 0;
-      const totalOrders = orders?.length || 0;
+      const totalRevenue = orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+      const totalOrders = orders.length;
       const aov = totalOrders > 0 ? totalRevenue / totalOrders : 0;
 
       setMetrics({
@@ -106,9 +110,10 @@ export default function AnalyticsPage() {
       const d = new Date(startDate);
       const today = new Date();
       while (d <= today) {
-        const dateKey = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const dateKey = dayKey(d);
         salesMap[dateKey] = {
-          date: dateKey,
+          date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+          day: dateKey,
           sales: 0,
           orders: 0,
           fullDate: d.getTime() // Helper for sorting
@@ -116,23 +121,22 @@ export default function AnalyticsPage() {
         d.setDate(d.getDate() + 1);
       }
 
-      orders?.forEach(o => {
-        const dateKey = new Date(o.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      orders.forEach(o => {
+        const dateKey = dayKey(new Date(o.created_at));
         if (salesMap[dateKey]) {
-          salesMap[dateKey].sales += o.total || 0;
+          salesMap[dateKey].sales += Number(o.total || 0);
           salesMap[dateKey].orders += 1;
         }
       });
 
-      setSalesData(Object.values(salesMap));
+      setSalesData(Object.values(salesMap).map((row: any) => ({ ...row, sales: Math.round(row.sales * 100) / 100 })));
 
       // Process Category Revenue
       const catMap: Record<string, any> = {};
       validItems.forEach(item => {
         const catName = item.products?.categories?.name || 'Uncategorized';
         if (!catMap[catName]) catMap[catName] = { name: catName, value: 0 };
-        // Use total_price if available, otherwise calculate from unit_price * quantity
-        const itemRevenue = item.total_price || (item.unit_price * item.quantity) || 0;
+        const itemRevenue = Number(item.total_price) || (Number(item.unit_price) * Number(item.quantity)) || 0;
         catMap[catName].value += itemRevenue;
       });
       // Convert to array for Recharts Pie
@@ -142,17 +146,19 @@ export default function AnalyticsPage() {
       // Process Top Products
       const prodMap: Record<string, any> = {};
       validItems.forEach(item => {
-        const pName = item.products?.name || 'Unknown';
-        if (!prodMap[pName]) prodMap[pName] = { name: pName, revenue: 0, units: 0 };
-        const itemRevenue = item.total_price || (item.unit_price * item.quantity) || 0;
-        prodMap[pName].revenue += itemRevenue;
-        prodMap[pName].units += item.quantity;
+        const pName = item.products?.name || item.product_name || 'Unknown';
+        const key = item.product_id || `name:${pName}`;
+        if (!prodMap[key]) prodMap[key] = { name: pName, revenue: 0, units: 0 };
+        const itemRevenue = Number(item.total_price) || (Number(item.unit_price) * Number(item.quantity)) || 0;
+        prodMap[key].revenue += itemRevenue;
+        prodMap[key].units += Number(item.quantity) || 0;
       });
       const topProdArray = Object.values(prodMap).sort((a: any, b: any) => b.revenue - a.revenue).slice(0, 5);
       setTopProducts(topProdArray);
 
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error fetching analytics:', err);
+      setLoadError(err?.message || 'Could not load analytics.');
     } finally {
       setLoading(false);
     }
@@ -163,6 +169,14 @@ export default function AnalyticsPage() {
   }, [fetchAnalytics]);
 
   const COLORS = ['#374151', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+  const exportCsv = () => {
+    downloadCsv(
+      `analytics-${timeRange}-${dayKey(new Date())}.csv`,
+      ['Date', 'Revenue (GHS)', 'Paid Orders'],
+      salesData.map(d => [d.day, csvMoney(d.sales), d.orders])
+    );
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -183,7 +197,11 @@ export default function AnalyticsPage() {
               <option value="90days">Last 90 Days</option>
               <option value="year">This Year</option>
             </select>
-            <button className="bg-primary hover:bg-primary text-white px-6 py-3 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer flex items-center justify-center">
+            <button
+              onClick={exportCsv}
+              disabled={loading || salesData.length === 0}
+              className="bg-primary hover:bg-primary text-white px-6 py-3 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               <i className="ri-download-line mr-2"></i>
               Export
             </button>
@@ -196,6 +214,12 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
+        {loadError && (
+          <div className="mb-6 p-4 rounded-lg border border-red-200 bg-red-50 text-red-700 text-sm" role="alert">
+            {loadError}
+          </div>
+        )}
+
         {/* Metrics Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <div className="bg-white rounded-xl shadow-sm p-6">
@@ -205,8 +229,8 @@ export default function AnalyticsPage() {
               </div>
               <span className="text-gray-900 font-semibold text-sm">Live</span>
             </div>
-            <p className="text-sm text-gray-600 mb-1">Total Revenue</p>
-            <p className="text-3xl font-bold text-gray-900">GH₵{metrics.revenue.toLocaleString()}</p>
+            <p className="text-sm text-gray-600 mb-1">Revenue (paid orders)</p>
+            <p className="text-3xl font-bold text-gray-900">GH₵{metrics.revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
           </div>
 
           <div className="bg-white rounded-xl shadow-sm p-6">
@@ -215,7 +239,7 @@ export default function AnalyticsPage() {
                 <i className="ri-shopping-cart-line text-2xl text-blue-700"></i>
               </div>
             </div>
-            <p className="text-sm text-gray-600 mb-1">Total Orders</p>
+            <p className="text-sm text-gray-600 mb-1">Paid Orders</p>
             <p className="text-3xl font-bold text-gray-900">{metrics.orders}</p>
           </div>
 
@@ -313,7 +337,7 @@ export default function AnalyticsPage() {
                     <tr key={index}>
                       <td className="py-3 text-sm font-medium text-gray-900">{product.name}</td>
                       <td className="py-3 text-right text-sm text-gray-600">{product.units}</td>
-                      <td className="py-3 text-right text-sm font-semibold text-gray-700">GH₵{product.revenue.toLocaleString()}</td>
+                      <td className="py-3 text-right text-sm font-semibold text-gray-700">GH₵{product.revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                     </tr>
                   ))}
                   {topProducts.length === 0 && <tr><td colSpan={3} className="text-center py-4 text-gray-500">No sales data yet.</td></tr>}

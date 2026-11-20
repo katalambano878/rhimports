@@ -1,4 +1,4 @@
-import { readObject, verifyObjectToken } from "@/lib/db/storage";
+import { objectResponseHeaders, readObject, verifyObjectToken } from "@/lib/db/storage";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -31,7 +31,7 @@ export async function GET(
   return new Response(new Uint8Array(obj.bytes), {
     status: 200,
     headers: {
-      "Content-Type": obj.contentType,
+      ...objectResponseHeaders(obj.contentType),
       "Cache-Control": "private, max-age=300",
     },
   });

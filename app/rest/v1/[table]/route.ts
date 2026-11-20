@@ -2,20 +2,35 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   createClient,
   applyPostgrestParams,
+  describeSelect,
+  type SelectTree,
 } from "@/lib/db/supabase-compat";
 import { isPlainPostgres } from "@/lib/db/mode";
 import {
   resolveActor,
   withRls,
   rlsDeniedStatus,
+  isStaffActor,
   RlsAuthError,
   type RlsActor,
 } from "@/lib/db/rls";
+import {
+  PolicyError,
+  assertNoCostFilters,
+  findDisallowedTable,
+  isAllowedTableName,
+  publicError,
+  stripCostColumns,
+  treeHasCostTable,
+} from "@/lib/db/rest-policy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const PG_IDENT = /^[a-z_][a-z0-9_]*$/i;
+/** PostgREST's `max-rows` on hosted Supabase: no read returns more rows than this. */
+const MAX_ROWS = 1000;
+
+const ANON: RlsActor = { kind: "anon", claims: { role: "anon" } };
 
 function corsHeaders(): HeadersInit {
   return {
@@ -41,26 +56,107 @@ function preferCount(req: NextRequest): boolean {
   return prefer.includes("count=exact");
 }
 
-function jsonError(message: string, status = 400, code = "PGRST") {
-  return NextResponse.json(
-    { message, code, details: null, hint: null },
-    { status, headers: corsHeaders() }
-  );
+/** PostgREST-shaped error; the message is generic for non-staff unless safe to show. */
+function jsonError(
+  err: { message?: string | null; code?: string | null; details?: string | null; hint?: string | null },
+  status: number,
+  actor: RlsActor = ANON
+) {
+  return NextResponse.json(publicError(err, actor), { status, headers: corsHeaders() });
 }
 
 async function actorOrError(req: NextRequest): Promise<RlsActor | NextResponse> {
   try {
     return await resolveActor(req.headers);
   } catch (e) {
-    if (e instanceof RlsAuthError) return jsonError(e.message, 401);
+    if (e instanceof RlsAuthError) return jsonError({ message: e.message, code: "PGRST301" }, 401);
     throw e;
   }
 }
 
-function failure(actor: RlsActor, message: string | undefined, fallback: string, code?: string) {
+function failure(actor: RlsActor, error: { message?: string; code?: string | null; details?: string | null; hint?: string | null }, fallback: string) {
+  const code = error.code ?? null;
+  const body = { ...error, message: error.message || fallback, code };
   // PostgREST answers single() with no or several rows as 406 / PGRST116.
-  if (code === "PGRST116") return jsonError(message || fallback, 406, code);
-  return jsonError(message || fallback, rlsDeniedStatus(actor, message) ?? 400);
+  if (code === "PGRST116") return jsonError(body, 406, actor);
+  const denied = rlsDeniedStatus(actor, error.message) ?? (code === "42501" ? (actor.kind === "anon" ? 401 : 403) : null);
+  return jsonError(body, denied ?? 400, actor);
+}
+
+/** What a request reads, and whether cost prices must be hidden from it. */
+interface Scope {
+  table: string;
+  actor: RlsActor;
+  tree: SelectTree;
+  hideCost: boolean;
+}
+
+/**
+ * Shared guard for every method: plain-Postgres mode, an allowed public table
+ * (top-level and embedded), the caller's identity, and the cost-price rule.
+ */
+async function guard(
+  req: NextRequest,
+  ctx: { params: Promise<{ table: string }> }
+): Promise<Scope | NextResponse> {
+  if (!isPlainPostgres()) {
+    return jsonError({ message: "Plain Postgres mode is not enabled (DATABASE_URL missing)" }, 503);
+  }
+  const { table } = await ctx.params;
+  if (!isAllowedTableName(table)) {
+    return jsonError({ message: `relation "public.${table.slice(0, 63)}" does not exist`, code: "42P01" }, 404);
+  }
+  let tree: SelectTree;
+  try {
+    tree = describeSelect(table, req.nextUrl.searchParams.get("select") || "*");
+  } catch {
+    return jsonError({ message: "Invalid select", code: "PGRST100" }, 400);
+  }
+  if (findDisallowedTable(tree) !== null) {
+    return jsonError(
+      { message: "Could not find a relationship in the schema cache", code: "PGRST200" },
+      400
+    );
+  }
+  const actor = await actorOrError(req);
+  if (actor instanceof NextResponse) return actor;
+
+  const staff = isStaffActor(actor);
+  if (!staff) {
+    try {
+      assertNoCostFilters(req.nextUrl.searchParams);
+    } catch (e) {
+      if (e instanceof PolicyError) {
+        return jsonError({ message: e.message, code: e.code }, actor.kind === "anon" ? 401 : 403, actor);
+      }
+      throw e;
+    }
+  }
+  return { table, actor, tree, hideCost: !staff && treeHasCostTable(tree) };
+}
+
+/** Response rows with cost prices removed for non-staff callers. */
+function visibleRows(data: any, scope: Scope): any {
+  if (scope.hideCost && data != null) stripCostColumns(data, scope.tree);
+  return data;
+}
+
+/**
+ * PATCH/DELETE without any row filter would touch every row the policy
+ * allows. Like Supabase's safeupdate guard, refuse it for everyone but staff.
+ */
+function requireFilter(scope: Scope, hasFilters: boolean, verb: "UPDATE" | "DELETE"): NextResponse | null {
+  if (hasFilters || isStaffActor(scope.actor)) return null;
+  return jsonError({ message: `${verb} requires a WHERE clause`, code: "21000" }, 400, scope.actor);
+}
+
+/** Mutations carry `select`/`on_conflict`/`columns` as options, not filters. */
+function withoutOptions(params: URLSearchParams): URLSearchParams {
+  const out = new URLSearchParams(params);
+  out.delete("select");
+  out.delete("on_conflict");
+  out.delete("columns");
+  return out;
 }
 
 export async function OPTIONS() {
@@ -71,13 +167,9 @@ export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ table: string }> }
 ) {
-  if (!isPlainPostgres()) {
-    return jsonError("Plain Postgres mode is not enabled (DATABASE_URL missing)", 503);
-  }
-  const { table } = await ctx.params;
-  if (!PG_IDENT.test(table)) return jsonError("Invalid table");
-  const actor = await actorOrError(req);
-  if (actor instanceof NextResponse) return actor;
+  const scope = await guard(req, ctx);
+  if (scope instanceof NextResponse) return scope;
+  const { table, actor } = scope;
 
   const client = createClient();
   const qb = client.from(table);
@@ -93,12 +185,20 @@ export async function GET(
   // Apply filters/order/limit without re-applying select
   const params = new URLSearchParams(req.nextUrl.searchParams);
   params.delete("select");
-  applyPostgrestParams(qb as any, params, {
-    preferSingle: preferSingle(req),
-  });
+  try {
+    applyPostgrestParams(qb as any, params, {
+      preferSingle: preferSingle(req),
+    });
+  } catch (e: any) {
+    return jsonError({ message: e?.message, code: "PGRST100" }, 400, actor);
+  }
+  // Hosted PostgREST never returned more than 1000 rows per request; pages
+  // that need more ask for them with .range().
+  qb.capRows(MAX_ROWS);
 
   const result = await withRls(actor, async () => await qb);
-  if (result.error) return failure(actor, result.error.message, "Query failed", result.error.code);
+  if (result.error) return failure(actor, result.error, "Query failed");
+  visibleRows(result.data, scope);
 
   const headers = new Headers(corsHeaders());
   headers.set("Content-Type", "application/json");
@@ -131,16 +231,12 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ table: string }> }
 ) {
-  if (!isPlainPostgres()) {
-    return jsonError("Plain Postgres mode is not enabled (DATABASE_URL missing)", 503);
-  }
-  const { table } = await ctx.params;
-  if (!PG_IDENT.test(table)) return jsonError("Invalid table");
-  const actor = await actorOrError(req);
-  if (actor instanceof NextResponse) return actor;
+  const scope = await guard(req, ctx);
+  if (scope instanceof NextResponse) return scope;
+  const { table, actor } = scope;
 
   const body = await req.json().catch(() => null);
-  if (body == null) return jsonError("Invalid JSON body");
+  if (body == null || typeof body !== "object") return jsonError({ message: "Invalid JSON body", code: "PGRST102" }, 400, actor);
 
   const client = createClient();
   // supabase-js .upsert() posts with Prefer: resolution=merge-duplicates and
@@ -156,7 +252,8 @@ export async function POST(
   if (preferSingle(req)) qb = qb.single() as typeof qb;
 
   const result = await withRls(actor, async () => await qb);
-  if (result.error) return failure(actor, result.error.message, "Insert failed");
+  if (result.error) return failure(actor, result.error, "Insert failed");
+  visibleRows(result.data, scope);
 
   return NextResponse.json(result.data, {
     status: 201,
@@ -168,27 +265,32 @@ export async function PATCH(
   req: NextRequest,
   ctx: { params: Promise<{ table: string }> }
 ) {
-  if (!isPlainPostgres()) {
-    return jsonError("Plain Postgres mode is not enabled (DATABASE_URL missing)", 503);
-  }
-  const { table } = await ctx.params;
-  if (!PG_IDENT.test(table)) return jsonError("Invalid table");
-  const actor = await actorOrError(req);
-  if (actor instanceof NextResponse) return actor;
+  const scope = await guard(req, ctx);
+  if (scope instanceof NextResponse) return scope;
+  const { table, actor } = scope;
 
   const body = await req.json().catch(() => null);
-  if (body == null || typeof body !== "object") return jsonError("Invalid JSON body");
+  if (body == null || typeof body !== "object" || Array.isArray(body)) {
+    return jsonError({ message: "Invalid JSON body", code: "PGRST102" }, 400, actor);
+  }
 
   const client = createClient();
   let qb = client.from(table).update(body);
-  applyPostgrestParams(qb as any, req.nextUrl.searchParams);
+  try {
+    applyPostgrestParams(qb as any, withoutOptions(req.nextUrl.searchParams));
+  } catch (e: any) {
+    return jsonError({ message: e?.message, code: "PGRST100" }, 400, actor);
+  }
+  const unfiltered = requireFilter(scope, qb.hasFilters, "UPDATE");
+  if (unfiltered) return unfiltered;
   if (preferReturn(req) || preferSingle(req)) {
     qb = qb.select("*") as typeof qb;
   }
   if (preferSingle(req)) qb = qb.single() as typeof qb;
 
   const result = await withRls(actor, async () => await qb);
-  if (result.error) return failure(actor, result.error.message, "Update failed");
+  if (result.error) return failure(actor, result.error, "Update failed");
+  visibleRows(result.data, scope);
 
   return NextResponse.json(result.data, { status: 200, headers: corsHeaders() });
 }
@@ -197,23 +299,26 @@ export async function DELETE(
   req: NextRequest,
   ctx: { params: Promise<{ table: string }> }
 ) {
-  if (!isPlainPostgres()) {
-    return jsonError("Plain Postgres mode is not enabled (DATABASE_URL missing)", 503);
-  }
-  const { table } = await ctx.params;
-  if (!PG_IDENT.test(table)) return jsonError("Invalid table");
-  const actor = await actorOrError(req);
-  if (actor instanceof NextResponse) return actor;
+  const scope = await guard(req, ctx);
+  if (scope instanceof NextResponse) return scope;
+  const { table, actor } = scope;
 
   const client = createClient();
   let qb = client.from(table).delete();
-  applyPostgrestParams(qb as any, req.nextUrl.searchParams);
+  try {
+    applyPostgrestParams(qb as any, withoutOptions(req.nextUrl.searchParams));
+  } catch (e: any) {
+    return jsonError({ message: e?.message, code: "PGRST100" }, 400, actor);
+  }
+  const unfiltered = requireFilter(scope, qb.hasFilters, "DELETE");
+  if (unfiltered) return unfiltered;
   if (preferReturn(req)) {
     qb = qb.select("*") as typeof qb;
   }
 
   const result = await withRls(actor, async () => await qb);
-  if (result.error) return failure(actor, result.error.message, "Delete failed");
+  if (result.error) return failure(actor, result.error, "Delete failed");
+  visibleRows(result.data, scope);
 
   return NextResponse.json(result.data ?? null, { status: 200, headers: corsHeaders() });
 }
