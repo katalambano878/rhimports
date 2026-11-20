@@ -414,7 +414,7 @@ export async function signUpWithPassword(opts: {
   );
   await query(
     `INSERT INTO auth.identities (id, provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
-     VALUES (gen_random_uuid(), $1::text, $1, jsonb_build_object('sub', $1::text, 'email', $2::text,
+     VALUES (gen_random_uuid(), $1::text, $1::uuid, jsonb_build_object('sub', $1::text, 'email', $2::text,
              'email_verified', false, 'phone_verified', false), 'email', now(), now(), now())`,
     [rows[0].id, email]
   ).catch((e) => console.error("[auth] identity insert failed:", e.message));
