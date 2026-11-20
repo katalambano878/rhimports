@@ -141,7 +141,7 @@ export default function TermsPage() {
               <ul className="space-y-2 text-gray-600">
                 <li className="flex items-center gap-2">
                   <i className="ri-smartphone-line text-gray-900" aria-hidden="true"></i>
-                  <span>Mobile Money via Hubtel or Moolre</span>
+                  <span>Mobile Money via Hubtel</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <i className="ri-bank-card-line text-gray-900" aria-hidden="true"></i>

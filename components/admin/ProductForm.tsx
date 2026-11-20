@@ -379,9 +379,19 @@ export default function ProductForm({ initialData, isEditMode = false }: Product
         const name = productName.trim();
         if (!name) return 'Enter a product name.';
         const priceNum = Number(price);
-        if (price === '' || !Number.isFinite(priceNum) || priceNum < 0) return 'Enter a valid price (GH₵).';
-        if (status === 'active' && priceNum <= 0) {
-            return 'An active product must have a price above GH₵0. Set a price, or save it as Draft.';
+        // A product sold in options is priced per option: its own price may be empty or 0.
+        const pricedOptions = variants.filter((v) => Number(v.price) > 0);
+        const soldInOptions = variants.length > 0;
+        if (soldInOptions) {
+            if (!Number.isFinite(priceNum) || priceNum < 0) return 'Enter a valid price (GH₵), or leave it empty and price each option.';
+            if (status === 'active' && priceNum <= 0 && pricedOptions.length !== variants.length) {
+                return 'Give every option a price above GH₵0 (Variants tab), or set a product price.';
+            }
+        } else {
+            if (price === '' || !Number.isFinite(priceNum) || priceNum < 0) return 'Enter a valid price (GH₵).';
+            if (status === 'active' && priceNum <= 0) {
+                return 'An active product must have a price above GH₵0. Set a price, or save it as Draft.';
+            }
         }
         if (comparePrice !== '' && comparePrice !== null && !Number.isFinite(Number(comparePrice))) {
             return 'Compare-at price must be a number (or leave it empty).';

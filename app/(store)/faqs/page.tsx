@@ -87,12 +87,12 @@ export default function FAQsPage() {
     {
       category: 'payment',
       question: 'What payment methods do you accept?',
-      answer: 'All orders are paid online. With Hubtel you can pay with mobile money or a bank card; with Moolre you can pay with mobile money. We do not offer cash on delivery or payment in instalments.'
+      answer: 'All orders are paid online through Hubtel, with mobile money or a bank card. We do not offer cash on delivery or payment in instalments.'
     },
     {
       category: 'payment',
       question: 'Is it safe to pay on your site?',
-      answer: 'Yes. Payments are handled on the secure pages of our payment providers, Hubtel and Moolre. We never see or store your card details.'
+      answer: 'Yes. Payments are handled on the secure pages of our payment provider, Hubtel. We never see or store your card details.'
     },
     {
       category: 'payment',

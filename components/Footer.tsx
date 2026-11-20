@@ -158,7 +158,7 @@ export default function Footer() {
               </li>
               <li className="flex items-start gap-3">
                 <i className="ri-secure-payment-line mt-0.5 shrink-0" aria-hidden="true"></i>
-                <span>Pay online: mobile money or card with Hubtel, or mobile money with Moolre. No cash on delivery.</span>
+                <span>Pay online with Hubtel: mobile money or card. No cash on delivery.</span>
               </li>
             </ul>
           </div>

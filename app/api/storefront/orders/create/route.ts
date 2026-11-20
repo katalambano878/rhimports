@@ -301,6 +301,14 @@ export async function POST(req: Request) {
                 }
             }
 
+            // A product sold in options is never ordered without one: the
+            // product's own price is only a "from" price (often 0).
+            if (!variant && pvs.length > 0) {
+                return badRequest(`Please choose an option for ${product.name}, then add it to your cart again.`, {
+                    unavailable: [product.name],
+                });
+            }
+
             const qty = Number(item.quantity);
             const moq = Math.max(1, Number(product.moq) || 1);
             if (qty < moq) {

@@ -234,7 +234,10 @@ export async function POST(request: Request) {
           variant = variants.find((v) => v.id === w.variantId);
           if (!variant) throw new CheckoutError(`A variant of "${product.name}" no longer exists. Remove it and add it again.`);
         }
-        // No variantId: the till sells the product itself at the product price (as it always has).
+        // A product sold in options needs the option: its own price is only a "from" price.
+        if (!variant && variants.length > 0) {
+          throw new CheckoutError(`Choose an option for "${product.name}". Remove it and add it again.`);
+        }
         const unitP = toPesewas(variant ? variant.price ?? product.price : product.price);
         if (!Number.isFinite(unitP) || unitP <= 0) {
           throw new CheckoutError(`"${product.name}" has no price (GH₵0). Save a price for it first.`);

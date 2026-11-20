@@ -608,8 +608,17 @@ export default function POSPage() {
                             {filteredProducts.map(product => (
                                 <div
                                     key={product.id}
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-label={`Add ${product.name} to the order`}
                                     onClick={() => handleProductClick(product)}
-                                    className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer overflow-hidden border border-gray-100 group flex flex-col h-full"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                            e.preventDefault();
+                                            handleProductClick(product);
+                                        }
+                                    }}
+                                    className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer overflow-hidden border border-gray-100 group flex flex-col h-full focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900"
                                 >
                                     <div className="aspect-square relative bg-gray-50 shrink-0">
                                         <img
